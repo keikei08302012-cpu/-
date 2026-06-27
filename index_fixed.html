@@ -1,0 +1,3084 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>🇯🇵 統合防災モニター</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+/* ============================================================
+   CSS変数 / リセット
+============================================================ */
+:root{
+  --bg:#0d0f14; --panel:#141720; --panel2:#1a1e28; --panel3:#1e2330;
+  --border:#252a38; --border2:#2e3448;
+  --text:#e2e8f8; --sub:#7a8099; --sub2:#4a5068;
+  --accent:#4a9eff; --accent2:#00d4aa; --accent3:#f5a623;
+  --danger:#ff4444; --warn:#f5a623; --ok:#36d65a;
+  --eew-alert:#ff3030; --eew-forecast:#f5a623;
+  --font-ui:"Hiragino Sans","Yu Gothic UI","BIZ UDGothic",Meiryo,sans-serif;
+  --font-mono:"JetBrains Mono","Fira Code","Consolas",monospace;
+  --radius:8px; --radius-sm:5px;
+  --shadow:0 2px 12px rgba(0,0,0,.45);
+  --tab-h:44px; --header-h:52px; --footer-h:28px;
+}
+@media(max-width:600px){
+  :root{ --tab-h:40px; --header-h:48px; --footer-h:0px; }
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+html,body{height:100%; overflow:hidden;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:var(--font-ui); font-size:13px;
+  display:flex; flex-direction:column;
+}
+a{color:var(--accent);}
+button{cursor:pointer; font-family:var(--font-ui);}
+::-webkit-scrollbar{width:5px; height:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border2); border-radius:3px;}
+
+/* ============================================================
+   ヘッダー
+============================================================ */
+#header{
+  height:var(--header-h); background:#0a0c11; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; padding:0 10px; gap:8px; flex-shrink:0;
+  z-index:200;
+}
+#header h1{font-size:14px; font-weight:700; white-space:nowrap; letter-spacing:.04em;}
+#header h1 span{color:var(--accent);}
+.statusbar{display:flex; gap:6px; margin-left:auto; flex-wrap:nowrap; align-items:center; overflow:hidden;}
+.sitem{display:flex; align-items:center; gap:4px; font-size:11px; color:var(--sub); white-space:nowrap; cursor:default;}
+.sitem:hover{color:var(--text);}
+@media(max-width:600px){ .sitem-label{display:none;} }
+.dot{width:8px; height:8px; border-radius:50%; background:#444; transition:background .3s,box-shadow .3s; flex-shrink:0;}
+.dot.ok{background:var(--ok); box-shadow:0 0 6px var(--ok);}
+.dot.bad{background:var(--danger); box-shadow:0 0 6px var(--danger);}
+.dot.warn{background:var(--warn); box-shadow:0 0 6px var(--warn);}
+.dot.connecting{background:var(--warn); animation:dot-blink .8s ease-in-out infinite;}
+@keyframes dot-blink{0%,100%{opacity:1;} 50%{opacity:.3;}}
+#headerClock{font-family:var(--font-mono); font-size:12px; color:var(--sub); letter-spacing:.04em; min-width:60px; text-align:right;}
+@media(max-width:480px){#headerClock{display:none;}}
+.hbtn{
+  background:var(--panel2); border:1px solid var(--border2); border-radius:var(--radius-sm);
+  color:var(--text); padding:5px 8px; font-size:11px; white-space:nowrap;
+  transition:background .15s; flex-shrink:0;
+}
+.hbtn:hover{background:var(--panel3);}
+.hbtn.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+@media(max-width:480px){ .hbtn-label{display:none;} }
+
+/* ============================================================
+   タブバー
+============================================================ */
+#tabbar{
+  height:var(--tab-h); background:#0d0f14; border-bottom:1px solid var(--border);
+  display:flex; align-items:stretch; padding:0 4px; gap:2px; flex-shrink:0;
+  overflow-x:auto; z-index:100; -webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
+}
+#tabbar::-webkit-scrollbar{display:none;}
+.tab{
+  display:flex; align-items:center; gap:4px; padding:0 10px;
+  font-size:12px; font-weight:500; color:var(--sub); cursor:pointer;
+  border-bottom:2px solid transparent; white-space:nowrap;
+  transition:color .15s, border-color .15s; flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+}
+@media(max-width:600px){ .tab{font-size:11px; padding:0 8px;} }
+.tab:hover{color:var(--text);}
+.tab.active{color:var(--accent); border-bottom-color:var(--accent);}
+.tab-badge{
+  background:var(--danger); color:#fff; font-size:10px; padding:1px 5px;
+  border-radius:10px; font-weight:700; display:none;
+}
+.tab-badge.show{display:inline;}
+
+/* ============================================================
+   メインコンテンツ
+============================================================ */
+#main{flex:1; overflow:hidden; position:relative; min-height:0;}
+.tabpanel{
+  position:absolute; inset:0; display:none; overflow:hidden;
+}
+.tabpanel.active{display:flex;}
+
+/* ============================================================
+   マップタブ レイアウト
+============================================================ */
+#tab-map.active{flex-direction:row; gap:0;}
+#map-container{flex:1; position:relative; min-width:0;}
+#map{width:100%; height:100%;}
+.map-overlay{
+  position:absolute; z-index:10; pointer-events:none;
+}
+.map-overlay.tl{top:8px; left:8px;}
+.map-overlay.tr{top:8px; right:8px;}
+.map-overlay.bl{bottom:30px; left:8px;}
+.kyoshin-drop{
+  position:absolute; top:56px; left:8px; z-index:18; pointer-events:all;
+  width:230px;
+  background:rgba(16,20,28,.96); border:1px solid rgba(36,210,110,.75);
+  border-radius:var(--radius-sm); overflow:hidden; box-shadow:var(--shadow);
+}
+.kyoshin-drop .kyoshin-drop-title{
+  background:linear-gradient(90deg,#13a65a,#19d271);
+  color:#eafff3; padding:6px 8px; font-weight:900; font-size:12px;
+  display:flex; align-items:center; justify-content:space-between; cursor:pointer;
+}
+.kyoshin-drop .kyoshin-drop-body{
+  padding:7px 8px; display:none; grid-template-columns:1fr;
+  gap:3px; color:#e8edf8; font-size:12px; font-weight:700;
+  max-height:190px; overflow-y:auto;
+}
+.kyoshin-drop.open .kyoshin-drop-body{display:grid;}
+.kyoshin-drop .shake-meta{
+  grid-column:1 / -1; color:var(--sub); font-size:11px; font-weight:500; margin-top:2px;
+}
+@media(max-width:600px){
+  #tab-map.active{flex-direction:column;}
+  #sidepanel{width:100%!important; max-width:100%!important; min-width:0!important;
+    border-left:none!important; border-top:1px solid var(--border);
+    height:46%; max-height:46%; flex-shrink:0;}
+  .map-overlay.tl{top:4px; left:4px;}
+  .map-overlay.tr{top:4px; right:4px;}
+  .map-overlay.bl{bottom:4px; left:4px;}
+  .kyoshin-drop{top:48px; left:4px; width:220px;}
+  .kyoshin-drop .kyoshin-drop-body{font-size:12px;}
+}
+
+/* マップコントロール */
+.map-control{
+  background:rgba(13,15,20,.88); backdrop-filter:blur(6px);
+  border:1px solid var(--border); border-radius:var(--radius);
+  padding:6px 8px; pointer-events:all; font-size:11px;
+}
+.map-ctrl-row{display:flex; gap:4px; flex-wrap:wrap;}
+.mctrl-btn{
+  background:var(--panel2); border:1px solid var(--border2); border-radius:var(--radius-sm);
+  color:var(--text); padding:4px 7px; font-size:11px; cursor:pointer; transition:background .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.mctrl-btn:hover{background:var(--panel3);}
+.mctrl-btn.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+
+/* ============================================================
+   サイドパネル (マップタブ右側)
+============================================================ */
+#sidepanel{
+  width:320px; min-width:260px; max-width:380px;
+  background:var(--panel); border-left:1px solid var(--border);
+  display:flex; flex-direction:column; overflow:hidden;
+  flex-shrink:0;
+}
+.sp-tab-bar{
+  display:flex; border-bottom:1px solid var(--border);
+  background:#0f1119; flex-shrink:0;
+}
+.sp-tab{
+  flex:1; padding:8px 4px; font-size:11px; font-weight:600;
+  text-align:center; cursor:pointer; color:var(--sub);
+  border-bottom:2px solid transparent; transition:color .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.sp-tab.active{color:var(--accent); border-bottom-color:var(--accent);}
+.sp-content{flex:1; overflow-y:auto; padding:8px; min-height:0;}
+.sp-panel{display:none;}
+.sp-panel.active{display:block;}
+
+/* ============================================================
+   カード
+============================================================ */
+.card{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); margin-bottom:8px;
+  overflow:hidden;
+}
+.card-head{
+  padding:8px 12px; font-size:11px; font-weight:700;
+  color:var(--sub); border-bottom:1px solid var(--border);
+  display:flex; justify-content:space-between; align-items:center;
+  letter-spacing:.06em; text-transform:uppercase;
+}
+.card-body{padding:10px 12px;}
+.card-head .badge{
+  background:var(--accent); color:#fff; font-size:10px;
+  padding:1px 6px; border-radius:10px;
+}
+
+/* ============================================================
+   EEWバナー
+============================================================ */
+#eewBanner{
+  border-radius:var(--radius); padding:12px 14px;
+  background:var(--panel3); border:1px solid var(--border2);
+  transition:all .2s;
+}
+#eewBanner.idle{opacity:.5;}
+#eewBanner.forecast{
+  background:rgba(245,166,35,.1); border:1px solid var(--warn);
+}
+#eewBanner.alert{
+  background:rgba(255,48,48,.12); border:1px solid var(--eew-alert);
+  animation:eew-flash 1s ease-in-out infinite;
+}
+@keyframes eew-flash{
+  0%,100%{box-shadow:0 0 0 transparent;}
+  50%{box-shadow:0 0 20px rgba(255,48,48,.5);}
+}
+.eew-title{font-size:14px; font-weight:700; margin-bottom:8px;}
+.eew-grid{display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:12px;}
+.eew-grid span{color:var(--sub);}
+.eew-grid b{color:#fff;}
+.eew-scale{
+  display:inline-block; font-size:22px; font-weight:900;
+  padding:4px 12px; border-radius:6px; margin-top:8px;
+}
+#eewCountdown{
+  font-size:36px; font-weight:900; text-align:center;
+  font-family:var(--font-mono); color:var(--danger);
+  padding:8px 0; display:none;
+  text-shadow:0 0 20px rgba(255,68,68,.6);
+  letter-spacing:.05em;
+}
+
+/* ============================================================
+   地震リスト
+============================================================ */
+.eq-list{list-style:none; max-height:260px; overflow-y:auto;}
+.eq-item{
+  display:flex; gap:8px; align-items:center;
+  padding:7px 6px; border-bottom:1px solid var(--border);
+  cursor:pointer; transition:background .1s;
+}
+.eq-item:hover{background:var(--panel3);}
+.scale-chip{
+  min-width:32px; text-align:center; padding:3px 4px;
+  border-radius:4px; font-weight:800; font-size:11px; flex-shrink:0;
+}
+.eq-meta{flex:1; line-height:1.5; min-width:0;}
+.eq-meta .place{font-weight:600; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.eq-meta .detail{color:var(--sub); font-size:11px;}
+
+/* ============================================================
+   津波
+============================================================ */
+#tsunamiBox{
+  padding:10px; border-radius:var(--radius-sm); font-size:12px;
+  border:1px solid var(--border2); color:var(--sub);
+}
+#tsunamiBox.alert{
+  background:rgba(255,48,48,.12); border-color:var(--danger); color:#fff;
+  animation:eew-flash 1.5s ease-in-out infinite;
+}
+#tsunamiBox.watch{background:rgba(245,166,35,.1); border-color:var(--warn); color:#fff;}
+
+/* ============================================================
+   チャット
+============================================================ */
+#tab-chat.active{flex-direction:column;}
+.chat-messages{
+  flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px;
+  min-height:0; -webkit-overflow-scrolling:touch;
+}
+.chat-msg{
+  max-width:80%; padding:8px 12px; border-radius:12px; font-size:12px; line-height:1.5;
+  word-break:break-word;
+}
+.chat-msg.system{
+  background:var(--panel2); border:1px solid var(--border);
+  color:var(--sub); max-width:100%; border-radius:var(--radius-sm);
+  font-size:11px; text-align:center;
+}
+.chat-msg.discord-mirror{
+  background:rgba(88,101,242,.12); border:1px solid rgba(88,101,242,.4);
+  border-radius:4px 12px 12px 12px;
+}
+.chat-msg.other{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:4px 12px 12px 12px;
+}
+.chat-msg.mine{
+  background:var(--accent); color:#fff;
+  margin-left:auto; border-radius:12px 4px 12px 12px;
+}
+.chat-msg .sender{font-size:10px; color:var(--sub); margin-bottom:3px;}
+.chat-msg.mine .sender{color:rgba(255,255,255,.7);}
+.chat-msg.discord-mirror .sender{color:rgba(88,101,242,.9);}
+.chat-input-bar{
+  padding:8px 10px; border-top:1px solid var(--border);
+  display:flex; gap:8px; flex-shrink:0;
+}
+.chat-input-bar input{
+  flex:1; background:var(--panel2); border:1px solid var(--border2);
+  border-radius:var(--radius-sm); color:var(--text); padding:8px 10px; font-size:13px;
+  font-family:var(--font-ui); min-width:0;
+}
+.chat-input-bar input:focus{outline:none; border-color:var(--accent);}
+.chat-input-bar button{
+  background:var(--accent); border:none; color:#fff;
+  border-radius:var(--radius-sm); padding:8px 14px; font-size:12px; flex-shrink:0;
+}
+.chat-name-bar{
+  padding:8px 10px; border-bottom:1px solid var(--border);
+  display:flex; gap:8px; align-items:center; font-size:12px; flex-shrink:0; flex-wrap:wrap;
+}
+.chat-name-bar input{
+  background:var(--panel2); border:1px solid var(--border2);
+  border-radius:4px; color:var(--text); padding:4px 8px; font-size:12px; width:100px;
+}
+.chat-discord-status{font-size:11px; color:rgba(88,101,242,.9); margin-left:auto;}
+
+/* ============================================================
+   履歴タブ
+============================================================ */
+#history-tab.active{flex-direction:column;}
+#history-list{flex:1; overflow-y:auto; padding:10px; min-height:0; -webkit-overflow-scrolling:touch;}
+.history-item{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:12px 14px; margin-bottom:8px; cursor:pointer;
+  transition:border-color .15s;
+}
+.history-item:hover{border-color:var(--accent);}
+.history-item .h-head{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
+.history-item .h-body{font-size:11px; color:var(--sub); line-height:1.6;}
+.history-load-btn{
+  text-align:center; padding:10px;
+  cursor:pointer; color:var(--accent); font-size:12px;
+  border:1px dashed var(--border2); border-radius:var(--radius); margin-bottom:8px;
+}
+.history-load-btn:hover{background:var(--panel2);}
+.history-source-badge{
+  font-size:9px; padding:1px 5px; border-radius:8px;
+  background:var(--panel3); color:var(--sub); margin-left:6px;
+}
+.history-source-badge.api{background:rgba(74,158,255,.15); color:var(--accent);}
+
+/* ============================================================
+   設定タブ
+============================================================ */
+#settings-tab.active{flex-direction:column; overflow-y:auto;}
+.settings-section{padding:14px 16px; border-bottom:1px solid var(--border);}
+.settings-section h3{font-size:12px; color:var(--sub); font-weight:700; margin-bottom:12px; letter-spacing:.06em;}
+.setting-row{
+  display:flex; justify-content:space-between; align-items:center;
+  padding:7px 0; border-bottom:1px solid var(--border); font-size:12px;
+}
+.setting-row:last-child{border-bottom:none;}
+.setting-row label{color:var(--text);}
+.setting-row .sub{font-size:11px; color:var(--sub);}
+.toggle{
+  position:relative; width:38px; height:21px; cursor:pointer; flex-shrink:0;
+}
+.toggle input{opacity:0; width:0; height:0; position:absolute;}
+.toggle-slider{
+  position:absolute; inset:0; background:#333; border-radius:21px; transition:.25s;
+}
+.toggle-slider::before{
+  content:''; position:absolute; left:3px; top:3px;
+  width:15px; height:15px; background:#fff; border-radius:50%; transition:.25s;
+}
+.toggle input:checked + .toggle-slider{background:var(--accent);}
+.toggle input:checked + .toggle-slider::before{transform:translateX(17px);}
+.setting-row input[type=text],.setting-row input[type=number],.setting-row select{
+  background:var(--panel2); border:1px solid var(--border2);
+  border-radius:4px; color:var(--text); padding:4px 8px; font-size:12px; width:180px;
+}
+@media(max-width:480px){
+  .setting-row input[type=text],.setting-row input[type=number],.setting-row select{width:140px;}
+}
+.setting-row select{width:auto; cursor:pointer;}
+.setting-btn{
+  background:var(--panel2); border:1px solid var(--border2);
+  border-radius:var(--radius-sm); color:var(--text); padding:5px 12px;
+  font-size:12px; cursor:pointer; transition:background .15s;
+}
+.setting-btn:hover{background:var(--panel3);}
+.setting-btn.danger{border-color:var(--danger); color:var(--danger);}
+
+/* ============================================================
+   天気タブ
+============================================================ */
+#weather-tab.active{flex-direction:column; overflow-y:auto; padding:12px; gap:12px;}
+.weather-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px;}
+.weather-toolbar{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;}
+.weather-toolbar input,.weather-toolbar select{
+  background:var(--panel2); border:1px solid var(--border2); color:var(--text);
+  border-radius:var(--radius-sm); padding:6px 9px; font-size:12px;
+}
+.weather-toolbar input{min-width:140px; flex:1;}
+.weather-toolbar select{min-width:140px;}
+.wcard{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:14px; position:relative; overflow:hidden;
+  transition:border-color .15s;
+}
+.wcard:hover{border-color:var(--border2);}
+.wcard .w-city{font-size:13px; font-weight:700; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;}
+.wcard .w-temp{font-size:34px; font-weight:900; font-family:var(--font-mono); line-height:1;}
+.wcard .w-unit{font-size:15px; color:var(--sub);}
+.wcard .w-desc{color:var(--text); font-size:13px; margin-top:6px;}
+.wcard .w-extra{display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:10px; font-size:11px; color:var(--sub); border-top:1px solid var(--border); padding-top:8px;}
+.typhoon-card{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:12px;
+}
+
+/* ============================================================
+   警報・注意報タブ
+============================================================ */
+#tab-warning.active{flex-direction:column; overflow-y:auto;}
+.warning-toolbar{
+  padding:10px 14px; border-bottom:1px solid var(--border);
+  display:flex; gap:8px; flex-wrap:wrap; align-items:center; flex-shrink:0;
+}
+.warning-toolbar select{
+  background:var(--panel2); border:1px solid var(--border2); color:var(--text);
+  border-radius:var(--radius-sm); padding:6px 9px; font-size:12px;
+}
+.warning-list{flex:1; overflow-y:auto; padding:12px; min-height:0;}
+.warning-item{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:12px 14px; margin-bottom:8px;
+}
+.warning-item.level-warn{border-left:4px solid var(--danger); background:rgba(255,68,68,.05);}
+.warning-item.level-advisory{border-left:4px solid var(--warn); background:rgba(245,166,35,.05);}
+.warning-item.level-forecast{border-left:4px solid var(--accent); background:rgba(74,158,255,.05);}
+.warning-item .w-head{display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;}
+.warning-item .w-title{font-weight:700; font-size:13px;}
+.warning-badge{
+  font-size:10px; padding:2px 7px; border-radius:8px; font-weight:700;
+}
+.warning-badge.danger{background:var(--danger); color:#fff;}
+.warning-badge.warn{background:var(--warn); color:#000;}
+.warning-badge.accent{background:var(--accent); color:#fff;}
+.warning-area{font-size:12px; color:var(--sub); margin-top:4px;}
+.warning-time{font-size:11px; color:var(--sub2); margin-top:4px;}
+.warning-empty{
+  text-align:center; padding:40px 20px; color:var(--sub); font-size:13px;
+}
+
+/* ============================================================
+   雨雲レーダータブ
+============================================================ */
+#tab-radar.active{flex-direction:column;}
+#radar-map-container{flex:1; position:relative; min-height:0;}
+#radar-map{width:100%; height:100%;}
+.radar-controls{
+  position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
+  background:rgba(13,15,20,.92); border:1px solid var(--border);
+  border-radius:var(--radius); padding:10px 16px; z-index:20;
+  pointer-events:all; text-align:center; min-width:260px;
+}
+.radar-time-display{
+  font-size:12px; color:var(--accent2); font-family:var(--font-mono); margin-bottom:6px;
+}
+.radar-slider-wrap{display:flex; align-items:center; gap:8px;}
+.radar-slider-wrap input[type=range]{
+  flex:1; accent-color:var(--accent); cursor:pointer;
+}
+.radar-play-btn{
+  background:var(--accent); border:none; color:#fff;
+  border-radius:var(--radius-sm); padding:4px 12px; font-size:12px;
+}
+
+/* ============================================================
+   雨雲レーダー (マップオーバーレイ)
+============================================================ */
+.radar-panel{
+  background:rgba(13,15,20,.9); border:1px solid var(--border);
+  border-radius:var(--radius); padding:8px 10px; pointer-events:all;
+}
+.radar-time{font-size:10px; color:var(--sub); font-family:var(--font-mono);}
+
+/* ============================================================
+   通知トースト
+============================================================ */
+#toast-container{
+  position:fixed; top:calc(var(--header-h) + var(--tab-h) + 10px); right:10px;
+  z-index:9000; display:flex; flex-direction:column; gap:8px;
+  pointer-events:none; max-width:320px; width:calc(100vw - 20px);
+}
+.toast{
+  background:var(--panel2); border:1px solid var(--border2);
+  border-radius:var(--radius); padding:10px 12px; box-shadow:var(--shadow);
+  pointer-events:all; animation:toast-in .25s ease; font-size:12px;
+  display:flex; gap:8px; align-items:flex-start;
+}
+.toast.eew{background:rgba(255,48,48,.12); border-color:var(--danger);}
+.toast.tsunami{background:rgba(255,48,48,.1); border-color:var(--danger);}
+.toast.eq{background:rgba(74,158,255,.08); border-color:var(--accent);}
+.toast.info{background:rgba(0,212,170,.08); border-color:var(--accent2);}
+.toast .toast-icon{font-size:18px; flex-shrink:0;}
+.toast .toast-body .toast-title{font-weight:700; margin-bottom:3px;}
+.toast .toast-body .toast-sub{color:var(--sub); font-size:11px;}
+.toast .toast-close{
+  margin-left:auto; cursor:pointer; color:var(--sub); font-size:14px;
+  background:none; border:none; padding:0 4px; flex-shrink:0;
+}
+@keyframes toast-in{from{opacity:0;transform:translateX(20px);} to{opacity:1;transform:none;}}
+
+/* ============================================================
+   ログ
+============================================================ */
+#logbox{
+  background:#080a0d; border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:6px; font-size:10px;
+  max-height:120px; overflow-y:auto; font-family:var(--font-mono);
+  color:#7fb87f;
+}
+#logbox div{padding:2px 0; border-bottom:1px solid #151515; word-break:break-all;}
+#logbox div.err{color:#e05050;}
+#logbox div.warn{color:#d4a030;}
+
+/* ============================================================
+   凡例
+============================================================ */
+.legend{display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;}
+.legend-item{display:flex; align-items:center; gap:3px; font-size:10px; color:var(--sub);}
+.legend-dot{width:10px; height:10px; border-radius:2px; flex-shrink:0;}
+
+/* ============================================================
+   位置情報パネル
+============================================================ */
+.myloc-panel{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:8px 10px; margin-bottom:8px;
+}
+.myloc-panel .row{display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:2px 0;}
+.myloc-panel .row label{color:var(--sub);}
+.myloc-panel .row span{font-weight:600; font-family:var(--font-mono);}
+
+/* ============================================================
+   スピナー
+============================================================ */
+.spinner{
+  width:16px; height:16px; border:2px solid var(--border2);
+  border-top-color:var(--accent); border-radius:50%;
+  animation:spin .6s linear infinite; display:inline-block; vertical-align:middle;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* ============================================================
+   フッター
+============================================================ */
+#footer{
+  background:#0a0c11; border-top:1px solid var(--border);
+  padding:4px 14px; font-size:10px; color:var(--sub2); flex-shrink:0;
+  display:flex; gap:10px; flex-wrap:wrap;
+}
+@media(max-width:600px){ #footer{display:none;} }
+
+/* ============================================================
+   モーダル
+============================================================ */
+.modal-overlay{
+  position:fixed; inset:0; background:rgba(0,0,0,.75);
+  z-index:8000; display:none; align-items:center; justify-content:center; padding:16px;
+}
+.modal-overlay.open{display:flex;}
+.modal{
+  background:var(--panel); border:1px solid var(--border2);
+  border-radius:var(--radius); padding:20px; max-width:480px; width:100%;
+  max-height:80vh; overflow-y:auto; box-shadow:var(--shadow); position:relative;
+}
+.modal h2{font-size:15px; margin-bottom:12px; font-weight:700;}
+.modal .close{
+  position:absolute; top:14px; right:14px; background:none; border:none;
+  color:var(--sub); font-size:18px; cursor:pointer;
+}
+.eq-detail-grid{
+  display:grid; grid-template-columns:auto 1fr; gap:6px 14px; font-size:12px; margin-bottom:12px;
+}
+.eq-detail-grid dt{color:var(--sub);}
+.eq-detail-grid dd{font-weight:600;}
+
+/* P/S波リング凡例 */
+.wave-legend{display:flex; gap:10px; font-size:11px; margin-top:8px;}
+.wave-legend span{display:flex; align-items:center; gap:5px;}
+.wave-legend i{width:20px; height:3px; display:inline-block; border-radius:2px;}
+.wave-p{background:#4a9eff;}
+.wave-s{background:#ff4444;}
+
+/* ============================================================
+   火山・河川カード
+============================================================ */
+.vol-item{
+  padding:8px 10px; border-bottom:1px solid var(--border); font-size:12px;
+  display:flex; justify-content:space-between; align-items:center;
+}
+.vol-item .lv{
+  display:inline-block; padding:2px 8px; border-radius:4px;
+  font-size:10px; font-weight:700;
+}
+.lv1{background:#555; color:#fff;}
+.lv2{background:#e6c200; color:#000;}
+.lv3{background:#f58000; color:#fff;}
+.lv4{background:#e02020; color:#fff;}
+.lv5{background:#800; color:#fff;}
+
+/* ============================================================
+   停電マップ凡例
+============================================================ */
+.outage-list,.feature-list{display:grid; gap:8px;}
+.outage-item,.feature-item{
+  background:var(--panel2); border:1px solid var(--border); border-radius:var(--radius);
+  padding:10px 12px; font-size:12px;
+}
+.outage-item .meta,.feature-item .meta{color:var(--sub); font-size:11px; margin-top:4px; line-height:1.5;}
+.feature-item strong{color:var(--accent2);}
+
+/* ============================================================
+   EEW波面アニメーション
+============================================================ */
+#wavefront-svg{
+  position:absolute; inset:0; pointer-events:none; z-index:5;
+}
+
+/* ============================================================
+   強震モニタ タブ内パネル
+============================================================ */
+#tab-kyoshin.active{flex-direction:column;}
+#kyoshin-map-container{flex:1; position:relative; min-height:0;}
+#kyoshin-map{width:100%; height:100%;}
+.kyoshin-img-overlay{
+  position:absolute; z-index:4; pointer-events:none;
+  opacity:.78; image-rendering:auto; transform-origin:0 0;
+}
+.kyoshin-overlay{
+  position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
+  background:rgba(13,15,20,.92); border:1px solid var(--border);
+  border-radius:var(--radius); padding:8px 16px; z-index:20;
+  pointer-events:all; font-size:11px; white-space:nowrap;
+}
+.kyoshin-time{color:var(--accent2); font-family:var(--font-mono);}
+
+/* ============================================================
+   Jアラート
+============================================================ */
+#tab-jalert.active{flex-direction:column; overflow-y:auto;}
+.jalert-list{padding:12px; display:grid; gap:10px;}
+.jalert-item{
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:12px 14px;
+}
+.jalert-item.critical{border-color:var(--danger); background:rgba(255,48,48,.10);}
+.jalert-item.warn{border-color:var(--warn); background:rgba(245,166,35,.08);}
+.jalert-item .j-head{display:flex; gap:8px; align-items:center; margin-bottom:6px; font-weight:700;}
+.jalert-item .j-body{font-size:12px; color:var(--sub); line-height:1.6;}
+</style>
+</head>
+<body>
+
+<!-- ====================================================
+  ヘッダー
+===================================================== -->
+<div id="header">
+  <h1>🇯🇵 <span>統合防災</span>モニター</h1>
+  <div class="statusbar">
+    <div class="sitem" title="P2P地震情報 WebSocket"><span class="dot connecting" id="dotP2P"></span><span class="sitem-label">P2P</span></div>
+    <div class="sitem" title="Wolfx EEW WebSocket"><span class="dot connecting" id="dotWolfx"></span><span class="sitem-label">EEW</span></div>
+    <div class="sitem" title="強震モニタ"><span class="dot" id="dotStation"></span><span class="sitem-label">強震</span></div>
+    <div class="sitem" title="天気データ"><span class="dot" id="dotWeather"></span><span class="sitem-label">天気</span></div>
+    <button class="hbtn" id="btnSound" onclick="toggleSound()" title="音声オン/オフ">🔔 <span class="hbtn-label">音声</span></button>
+    <button class="hbtn" id="btnVoice" onclick="toggleVoice()" title="読み上げオン/オフ">🔊 <span class="hbtn-label">読上</span></button>
+    <button class="hbtn" id="btnNotif" onclick="requestNotif()">🔔</button>
+    <span id="headerClock">--:--:--</span>
+  </div>
+</div>
+
+<!-- ====================================================
+  タブバー
+===================================================== -->
+<div id="tabbar">
+  <div class="tab active" data-tab="tab-map" onclick="switchTab('tab-map',this)">🗾 マップ</div>
+  <div class="tab" data-tab="tab-history" onclick="switchTab('tab-history',this)">📋 地震履歴<span class="tab-badge" id="badge-history">0</span></div>
+  <div class="tab" data-tab="tab-warning" onclick="switchTab('tab-warning',this)">⚠️ 警報<span class="tab-badge" id="badge-warning">0</span></div>
+  <div class="tab" data-tab="tab-jalert" onclick="switchTab('tab-jalert',this)">🚨 Jアラート<span class="tab-badge" id="badge-jalert">0</span></div>
+  <div class="tab" data-tab="tab-weather" onclick="switchTab('tab-weather',this)">🌤 天気</div>
+  <div class="tab" data-tab="tab-radar" onclick="switchTab('tab-radar',this)">🌧 雨雲</div>
+  <div class="tab" data-tab="tab-kyoshin" onclick="switchTab('tab-kyoshin',this)">📡 強震</div>
+  <div class="tab" data-tab="tab-volcano" onclick="switchTab('tab-volcano',this)">🌋 火山</div>
+  <div class="tab" data-tab="tab-chat" onclick="switchTab('tab-chat',this)">💬 チャット<span class="tab-badge" id="badge-chat">0</span></div>
+  <div class="tab" data-tab="tab-settings" onclick="switchTab('tab-settings',this)">⚙️ 設定</div>
+</div>
+
+<!-- ====================================================
+  メイン
+===================================================== -->
+<div id="main">
+
+  <!-- === マップタブ === -->
+  <div class="tabpanel active" id="tab-map">
+    <div id="map-container">
+      <div id="map"></div>
+      <svg id="wavefront-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="shakePanel" class="shake-panel">
+        <div class="shake-title" onclick="toggleShakePanel()">
+          <span id="shakeTitle">揺れ検知</span>
+          <span id="shakeToggle">▼</span>
+        </div>
+        <div class="shake-body" id="shakeBody"></div>
+      </div>
+
+      <!-- マップ左上コントロール -->
+      <div class="map-overlay tl" style="pointer-events:all;">
+        <div class="map-control" style="padding:6px 8px; margin-bottom:6px;">
+          <div class="map-ctrl-row">
+            <button class="mctrl-btn active" id="btnOverlayStation" onclick="toggleOverlay('station',this)" title="観測点">観測点</button>
+            <button class="mctrl-btn active" id="btnOverlayRadar" onclick="toggleOverlay('radar',this)" title="雨雲レーダー">雨雲</button>
+            <button class="mctrl-btn" id="btnOverlayKyoshin" onclick="toggleOverlay('kyoshin',this)" title="強震モニタ">強震</button>
+            <button class="mctrl-btn" id="btnOverlayWave" onclick="toggleOverlay('wave',this)" title="P/S波表示">P/S波</button>
+          </div>
+        </div>
+        <div class="map-control" style="padding:6px 8px;">
+          <div style="font-size:10px; color:var(--sub); margin-bottom:4px; letter-spacing:.05em;">JDQ震度配色</div>
+          <div class="legend" id="mapLegend"></div>
+        </div>
+      </div>
+
+      <!-- マップ右上: 位置情報・到達予測 -->
+      <div class="map-overlay tr" style="pointer-events:all; min-width:170px;">
+        <div class="map-control">
+          <div style="font-size:10px; color:var(--sub); margin-bottom:6px;">📍 現在地・到達予測</div>
+          <div class="myloc-panel" style="margin:0; background:transparent; border:none; padding:0;">
+            <div class="row"><label>緯度</label><span id="myLat">--</span></div>
+            <div class="row"><label>経度</label><span id="myLon">--</span></div>
+            <div class="row" id="pWaveRow" style="display:none;"><label>P波</label><span id="pWaveTime" style="color:var(--warn);">--</span></div>
+            <div class="row" id="sWaveRow" style="display:none;"><label>S波</label><span id="sWaveTime" style="color:var(--danger);">--</span></div>
+          </div>
+          <div id="eewCountdown" style="font-size:28px; font-weight:900; text-align:center; font-family:var(--font-mono); color:var(--danger); padding:6px 0; display:none; text-shadow:0 0 16px rgba(255,68,68,.6);">--</div>
+          <button class="mctrl-btn" style="width:100%; margin-top:6px;" onclick="locateMe()">📡 位置更新</button>
+        </div>
+      </div>
+
+      <!-- マップ左下: 雨雲時刻スライダー -->
+      <div class="map-overlay bl" style="pointer-events:all;">
+        <div class="radar-panel" id="radarPanel">
+          <div class="radar-time" id="radarTime">雨雲レーダー: --</div>
+          <input type="range" id="radarSlider" min="0" max="10" value="10" style="width:160px; accent-color:var(--accent);" oninput="updateRadarTime(this.value)">
+        </div>
+      </div>
+    </div>
+
+    <!-- === サイドパネル === -->
+    <div id="sidepanel">
+      <div class="sp-tab-bar">
+        <div class="sp-tab active" onclick="spTab('sp-eq',this)">地震</div>
+        <div class="sp-tab" onclick="spTab('sp-eew',this)">EEW</div>
+        <div class="sp-tab" onclick="spTab('sp-tsunami',this)">津波</div>
+        <div class="sp-tab" onclick="spTab('sp-log',this)">ログ</div>
+      </div>
+      <div class="sp-content">
+
+        <!-- 地震パネル -->
+        <div class="sp-panel active" id="sp-eq">
+          <div class="card">
+            <div class="card-head">最新の地震情報 <span id="eqCount" class="badge">0</span></div>
+            <div class="card-body" style="padding:0;">
+              <ul class="eq-list" id="eqList"><li style="padding:14px; color:var(--sub); font-size:12px;">受信待機中…</li></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- EEWパネル -->
+        <div class="sp-panel" id="sp-eew">
+          <div id="eewBanner" class="idle">
+            <div class="eew-title" id="eewTitle">緊急地震速報 受信待機中…</div>
+            <div class="eew-grid" id="eewGrid"></div>
+            <div id="eewCountdown2"></div>
+            <div class="wave-legend">
+              <span><i class="wave-p"></i>P波(初期微動)</span>
+              <span><i class="wave-s"></i>S波(主要動)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 津波パネル -->
+        <div class="sp-panel" id="sp-tsunami">
+          <div class="card">
+            <div class="card-head">津波情報</div>
+            <div class="card-body">
+              <div id="tsunamiBox">現在、津波の心配はありません。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ログパネル -->
+        <div class="sp-panel" id="sp-log">
+          <div class="card">
+            <div class="card-head">受信ログ</div>
+            <div class="card-body" style="padding:6px;">
+              <div id="logbox"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- === 地震履歴タブ === -->
+  <div class="tabpanel" id="tab-history">
+    <div style="padding:8px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; flex-shrink:0; align-items:center;">
+      <button class="filter-btn active" data-min="0" onclick="filterHistory(0,this)">すべて</button>
+      <button class="filter-btn" data-min="3" onclick="filterHistory(3,this)">震度3+</button>
+      <button class="filter-btn" data-min="4" onclick="filterHistory(4,this)">震度4+</button>
+      <button class="filter-btn" data-min="5" onclick="filterHistory(5,this)">震度5弱+</button>
+      <button class="filter-btn" data-min="6" onclick="filterHistory(6,this)">震度6弱+</button>
+      <button class="setting-btn" style="margin-left:auto; font-size:10px; padding:3px 8px;" onclick="loadHistoryFromAPI()">📥 過去1ヶ月取得</button>
+      <span style="font-size:11px; color:var(--sub);" id="historyCount">0件</span>
+    </div>
+    <div id="history-list"></div>
+  </div>
+
+  <!-- === 警報・注意報タブ === -->
+  <div class="tabpanel" id="tab-warning">
+    <div class="warning-toolbar">
+      <select id="warnPrefSelect" onchange="loadWarnings()">
+        <option value="010000">北海道</option>
+        <option value="020000">青森県</option>
+        <option value="030000">岩手県</option>
+        <option value="040000">宮城県</option>
+        <option value="050000">秋田県</option>
+        <option value="060000">山形県</option>
+        <option value="070000">福島県</option>
+        <option value="080000">茨城県</option>
+        <option value="090000">栃木県</option>
+        <option value="100000">群馬県</option>
+        <option value="110000">埼玉県</option>
+        <option value="120000">千葉県</option>
+        <option value="130000">東京都</option>
+        <option value="140000">神奈川県</option>
+        <option value="150000">新潟県</option>
+        <option value="160000">富山県</option>
+        <option value="170000">石川県</option>
+        <option value="180000">福井県</option>
+        <option value="190000">山梨県</option>
+        <option value="200000">長野県</option>
+        <option value="210000">岐阜県</option>
+        <option value="220000">静岡県</option>
+        <option value="230000">愛知県</option>
+        <option value="240000">三重県</option>
+        <option value="250000">滋賀県</option>
+        <option value="260000">京都府</option>
+        <option value="270000">大阪府</option>
+        <option value="280000">兵庫県</option>
+        <option value="290000">奈良県</option>
+        <option value="300000">和歌山県</option>
+        <option value="310000">鳥取県</option>
+        <option value="320000">島根県</option>
+        <option value="330000">岡山県</option>
+        <option value="340000">広島県</option>
+        <option value="350000">山口県</option>
+        <option value="360000">徳島県</option>
+        <option value="370000">香川県</option>
+        <option value="380000">愛媛県</option>
+        <option value="390000">高知県</option>
+        <option value="400000">福岡県</option>
+        <option value="410000">佐賀県</option>
+        <option value="420000">長崎県</option>
+        <option value="430000">熊本県</option>
+        <option value="440000">大分県</option>
+        <option value="450000">宮崎県</option>
+        <option value="460100">鹿児島県</option>
+        <option value="471000">沖縄県</option>
+      </select>
+      <button class="setting-btn" onclick="loadWarnings()">🔄 更新</button>
+      <span style="font-size:11px; color:var(--sub);" id="warningCount"></span>
+      <span style="font-size:11px; color:var(--sub2); margin-left:auto;" id="warningUpdated"></span>
+    </div>
+    <div class="warning-list" id="warningList">
+      <div class="warning-empty"><span class="spinner"></span> 取得中…</div>
+    </div>
+  </div>
+
+  <!-- === Jアラートタブ === -->
+  <div class="tabpanel" id="tab-jalert">
+    <div class="warning-toolbar">
+      <button class="setting-btn" onclick="loadJAlertInfo()">🔄 更新</button>
+      <span style="font-size:11px; color:var(--sub);" id="jalertCount">0件</span>
+      <span style="font-size:11px; color:var(--sub2); margin-left:auto;" id="jalertUpdated"></span>
+    </div>
+    <div class="jalert-list" id="jalertList">
+      <div class="jalert-item">
+        <div class="j-head">🚨 Jアラート監視</div>
+        <div class="j-body">緊急地震速報・大津波警報・特別警報・国民保護情報を重大通知としてまとめます。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === 天気・台風タブ === -->
+  <div class="tabpanel" id="tab-weather">
+    <div style="flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:14px; -webkit-overflow-scrolling:touch;">
+      <div>
+        <div style="font-size:12px; color:var(--sub); margin-bottom:8px; font-weight:700; letter-spacing:.05em; display:flex; justify-content:space-between; align-items:center;">
+          <span>🌤 天気</span>
+          <button class="setting-btn" style="font-size:10px; padding:3px 8px;" onclick="loadWeather()">🔄 更新</button>
+        </div>
+        <div class="weather-toolbar">
+          <input type="search" id="prefSearch" placeholder="都道府県を検索" oninput="filterPrefOptions()">
+          <select id="prefSelect" onchange="selectPrefWeather(this.value)"></select>
+        </div>
+        <div class="weather-grid" id="weatherGrid"></div>
+      </div>
+      <div>
+        <div style="font-size:12px; color:var(--sub); margin-bottom:8px; font-weight:700; letter-spacing:.05em; display:flex; justify-content:space-between; align-items:center;">
+          <span>🌀 台風情報</span>
+          <button class="setting-btn" style="font-size:10px; padding:3px 8px;" onclick="loadTyphoon()">🔄 更新</button>
+        </div>
+        <div id="typhoonInfo" style="color:var(--sub); font-size:12px;">現在、台風の情報はありません。</div>
+      </div>
+      <div>
+        <div style="font-size:12px; color:var(--sub); margin-bottom:8px; font-weight:700; letter-spacing:.05em; display:flex; justify-content:space-between; align-items:center;">
+          <span>🔌 停電情報</span>
+        </div>
+        <div id="outageInfo" class="outage-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === 雨雲レーダータブ === -->
+  <div class="tabpanel" id="tab-radar">
+    <div id="radar-map-container">
+      <div id="radar-map"></div>
+      <div class="radar-controls">
+        <div class="radar-time-display" id="radarTabTime">-- 読み込み中 --</div>
+        <div class="radar-slider-wrap">
+          <button class="radar-play-btn" id="radarPlayBtn" onclick="toggleRadarPlay()">▶ 再生</button>
+          <input type="range" id="radarTabSlider" min="0" max="10" value="10" oninput="updateRadarTabTime(this.value)">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === 強震モニタタブ === -->
+  <div class="tabpanel" id="tab-kyoshin">
+    <div id="kyoshin-map-container">
+      <div id="kyoshin-map"></div>
+      <div class="kyoshin-overlay">
+        <div class="kyoshin-time" id="kyoshinTime">強震モニタ リアルタイム表示</div>
+        <div style="font-size:10px; color:var(--sub); margin-top:2px;">NIED K-NET/KiK-net 観測データ</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === 火山・河川タブ === -->
+  <div class="tabpanel" id="tab-volcano">
+    <div style="flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:14px; -webkit-overflow-scrolling:touch;">
+      <div>
+        <div style="font-size:12px; color:var(--sub); margin-bottom:8px; font-weight:700; letter-spacing:.05em; display:flex; justify-content:space-between; align-items:center;">
+          <span>🌋 火山活動レベル</span>
+          <button class="setting-btn" style="font-size:10px; padding:3px 8px;" onclick="loadVolcano()">🔄 更新</button>
+        </div>
+        <div id="volcanoList" style="color:var(--sub); font-size:12px;">取得中…</div>
+      </div>
+      <div>
+        <div style="font-size:12px; color:var(--sub); margin-bottom:8px; font-weight:700; letter-spacing:.05em;">🏞 河川水位情報</div>
+        <div id="riverList" style="color:var(--sub); font-size:12px;">
+          <div class="outage-item">
+            <div><strong>国土交通省 川の防災情報</strong></div>
+            <div class="meta"><a href="https://www.river.go.jp/kawabou/" target="_blank">river.go.jp/kawabou/</a>をご確認ください。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === チャットタブ === -->
+  <div class="tabpanel" id="tab-chat">
+    <div class="chat-name-bar">
+      <span>名前:</span>
+      <input type="text" id="chatName" placeholder="匿名" maxlength="20">
+      <span class="chat-discord-status" id="discordMirrorStatus"></span>
+      <span style="color:var(--sub); margin-left:8px; font-size:11px;" id="chatStatus">未接続</span>
+    </div>
+    <div class="chat-messages" id="chatMessages">
+      <div class="chat-msg system">グローバルチャットへようこそ。防災情報を共有しましょう。</div>
+    </div>
+    <div class="chat-input-bar">
+      <input type="text" id="chatInput" placeholder="メッセージを入力… (Enter送信)" maxlength="200" onkeydown="if(event.key==='Enter')sendChat()">
+      <button onclick="sendChat()">送信</button>
+    </div>
+  </div>
+
+  <!-- === 設定タブ === -->
+  <div class="tabpanel" id="tab-settings">
+    <div style="flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch;">
+      <div class="settings-section">
+        <h3>🔔 通知・音声</h3>
+        <div class="setting-row">
+          <div><label>EEW音声アラート</label><div class="sub">緊急地震速報受信時に警告音</div></div>
+          <label class="toggle"><input type="checkbox" id="setEEWSound" checked onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div><label>地震情報音</label><div class="sub">震度4以上で通知音</div></div>
+          <label class="toggle"><input type="checkbox" id="setEQSound" checked onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div><label>読み上げ(TTS)</label><div class="sub">EEW・地震情報を音声読み上げ</div></div>
+          <label class="toggle"><input type="checkbox" id="setTTS" onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div><label>ブラウザ通知</label><div class="sub">バックグラウンド時に通知</div></div>
+          <label class="toggle"><input type="checkbox" id="setNotif" onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div><label>最低通知震度</label></div>
+          <select id="setMinScale" onchange="saveSetting()">
+            <option value="1">震度1以上</option>
+            <option value="2">震度2以上</option>
+            <option value="3" selected>震度3以上</option>
+            <option value="4">震度4以上</option>
+            <option value="5">震度5弱以上</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>📡 Discord Webhook連携</h3>
+        <div class="setting-row">
+          <div><label>Webhook URL</label><div class="sub">地震・EEW情報をDiscordに投稿</div></div>
+          <input type="text" id="setWebhookUrl" placeholder="https://discord.com/api/webhooks/..." oninput="saveSetting()">
+        </div>
+        <div class="setting-row">
+          <div><label>最低送信震度</label></div>
+          <select id="setWebhookMinScale" onchange="saveSetting()">
+            <option value="3">震度3以上</option>
+            <option value="4" selected>震度4以上</option>
+            <option value="5">震度5弱以上</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div><label>EEWも送信</label></div>
+          <label class="toggle"><input type="checkbox" id="setWebhookEEW" checked onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div><label>チャット→Discordミラー</label><div class="sub">チャットメッセージをDiscordに転送</div></div>
+          <label class="toggle"><input type="checkbox" id="setWebhookChat" onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row" style="border:none;">
+          <button class="setting-btn" onclick="testWebhook()">テスト送信</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>🗺 マップ設定</h3>
+        <div class="setting-row">
+          <div><label>マップスタイル</label></div>
+          <select id="setMapStyle" onchange="changeMapStyle(this.value)">
+            <option value="dark">ダーク</option>
+            <option value="satellite">衛星写真</option>
+            <option value="topo">地形図</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div><label>P/S波アニメーション</label></div>
+          <label class="toggle"><input type="checkbox" id="setWaveAnim" checked onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div><label>強震モニタオーバーレイ</label></div>
+          <label class="toggle"><input type="checkbox" id="setKyoshin" checked onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>📍 位置情報</h3>
+        <div class="setting-row">
+          <div><label>GPS優先</label><div class="sub">オフの場合はIPアドレスから推定</div></div>
+          <label class="toggle"><input type="checkbox" id="setGPS" checked onchange="saveSetting()"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row" style="border:none;">
+          <button class="setting-btn" onclick="locateMe()">📡 今すぐ位置情報を更新</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>ℹ️ データ提供</h3>
+        <div style="font-size:11px; color:var(--sub); line-height:1.8;">
+          P2P地震情報 / Wolfx EEW / 気象庁震度観測点 / JDQ震度配色 / Open-Meteo<br>
+          MapLibre GL JS / OpenFreeMap / NIED強震モニタ(k-net.bosai.go.jp)<br>
+          気象庁 台風・火山・警報情報 / 国土交通省 河川水位情報<br>
+          <br>
+          本アプリは<strong>完全ローカル動作</strong>に対応しています。<br>
+          サーバー不要でブラウザから直接 index.html を開いて利用できます。<br>
+          ただし一部API(JMA等)はCORSプロキシなしではアクセスできない場合があります。<br>
+          <br>
+          本アプリは情報の正確性・即時性を保証しません。<br>
+          災害時は必ず<a href="https://www.jma.go.jp/" target="_blank">気象庁公式サイト</a>等をご確認ください。
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>⚙️ データ管理</h3>
+        <div class="setting-row" style="border:none;">
+          <button class="setting-btn danger" onclick="if(confirm('地震履歴・設定をリセットしますか?')){localStorage.clear();location.reload();}">全データリセット</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- #main -->
+
+<!-- フッター -->
+<div id="footer">
+  <span id="footerTime" style="font-family:var(--font-mono);">--:--:--</span>
+  <span>P2P地震情報 / Wolfx EEW / 気象庁 / NIED強震モニタ / MapLibre GL</span>
+  <span style="margin-left:auto;">本アプリは情報の正確性を保証しません。災害時は公式発表を優先。</span>
+</div>
+
+<!-- トースト -->
+<div id="toast-container"></div>
+
+<!-- 地震詳細モーダル -->
+<div class="modal-overlay" id="eqModal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('eqModal')">✕</button>
+    <h2 id="modalTitle">地震詳細</h2>
+    <dl class="eq-detail-grid" id="modalGrid"></dl>
+    <div id="modalPoints" style="max-height:200px; overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- フィルターボタンCSS (インライン) -->
+<style>
+.filter-btn{
+  background:var(--panel2); border:1px solid var(--border2);
+  border-radius:20px; padding:4px 12px; font-size:11px; color:var(--sub); cursor:pointer;
+}
+.filter-btn.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+</style>
+
+<script>
+'use strict';
+/* ============================================================
+   定数・設定
+============================================================ */
+const VERSION = '3.0.0';
+
+// JDQ震度配色
+const JDQ = {
+  '0':[100,100,100],'1':[150,150,150],'2':[0,100,200],'3':[0,200,140],
+  '4':[255,220,0],'5-':[246,170,0],'5+':[255,132,41],
+  '6-':[245,104,27],'6+':[255,40,30],'7':[153,0,51],
+  'Nodata':[50,50,50],'Unknown':[20,20,20]
+};
+const SCALE_ORDER = ['0','1','2','3','4','5-','5+','6-','6+','7'];
+const SCALE_LABEL = {'0':'0','1':'1','2':'2','3':'3','4':'4','5-':'5弱','5+':'5強','6-':'6弱','6+':'6強','7':'7'};
+const SCALE_NUM   = {'0':0,'1':1,'2':2,'3':3,'4':4,'5-':5,'5+':5.5,'6-':6,'6+':6.5,'7':7,'Nodata':-1};
+
+// CORSプロキシ設定 (完全ローカル動作用)
+// 複数のプロキシを試みるフォールバック機構
+const CORS_PROXIES = [
+  'https://corsproxy.io/?',
+  'https://api.allorigins.win/raw?url=',
+  'https://api.codetabs.com/v1/proxy?quest=',
+];
+let activeProxyIndex = 0;
+
+async function fetchWithProxy(url, options = {}) {
+  // まず直接取得を試みる
+  try {
+    const r = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
+    if (r.ok) return r;
+  } catch(e) { /* fallthrough */ }
+
+  // プロキシ経由
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    const idx = (activeProxyIndex + i) % CORS_PROXIES.length;
+    try {
+      const proxyUrl = CORS_PROXIES[idx] + encodeURIComponent(url);
+      const r = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+      if (r.ok) {
+        activeProxyIndex = idx;
+        return r;
+      }
+    } catch(e) { /* try next */ }
+  }
+  throw new Error('すべてのプロキシで取得失敗: ' + url);
+}
+
+function hex(rgb){return '#'+rgb.map(v=>v.toString(16).padStart(2,'0')).join('');}
+function p2pScaleToKey(s){
+  if(s===undefined||s===null||s===-1) return 'Nodata';
+  const m={10:'1',20:'2',30:'3',40:'4',45:'5-',50:'5+',55:'6-',60:'6+',70:'7'};
+  return m[s]||'Nodata';
+}
+function wolfxIntToKey(s){
+  if(!s) return 'Nodata';
+  const m={'0':'0','1':'1','2':'2','3':'3','4':'4','5弱':'5-','5強':'5+','6弱':'6-','6強':'6+','7':'7'};
+  return m[s]||'Nodata';
+}
+
+/* ============================================================
+   設定管理
+============================================================ */
+let cfg = {};
+function loadConfig(){
+  try{ cfg = JSON.parse(localStorage.getItem('bousai_cfg')||'{}'); }catch(e){ cfg={}; }
+  const defaults={
+    sound:true,eewSound:true,eqSound:true,tts:false,notif:false,
+    minScale:3,webhookUrl:'',webhookMinScale:4,webhookEEW:true,webhookChat:false,
+    gps:true,waveAnim:true,kyoshin:true,mapStyle:'dark'
+  };
+  Object.entries(defaults).forEach(([k,v])=>{ if(cfg[k]===undefined) cfg[k]=v; });
+}
+function saveSetting(){
+  cfg.eewSound = document.getElementById('setEEWSound').checked;
+  cfg.eqSound  = document.getElementById('setEQSound').checked;
+  cfg.tts      = document.getElementById('setTTS').checked;
+  cfg.notif    = document.getElementById('setNotif').checked;
+  cfg.minScale = parseInt(document.getElementById('setMinScale').value)||3;
+  cfg.webhookUrl = document.getElementById('setWebhookUrl').value.trim();
+  cfg.webhookMinScale = parseInt(document.getElementById('setWebhookMinScale').value)||4;
+  cfg.webhookEEW = document.getElementById('setWebhookEEW').checked;
+  cfg.webhookChat = document.getElementById('setWebhookChat').checked;
+  cfg.gps      = document.getElementById('setGPS').checked;
+  cfg.waveAnim = document.getElementById('setWaveAnim').checked;
+  cfg.kyoshin  = document.getElementById('setKyoshin').checked;
+  soundOn = cfg.eewSound || cfg.eqSound;
+  voiceOn = cfg.tts;
+  document.getElementById('btnSound').querySelector('.hbtn-label').textContent = soundOn?'音声':'音声';
+  document.getElementById('btnSound').textContent = (soundOn?'🔔':'🔇') + ' ';
+  const sl = document.createElement('span'); sl.className='hbtn-label'; sl.textContent='音声';
+  // rebuild
+  updateSoundBtn();
+  localStorage.setItem('bousai_cfg', JSON.stringify(cfg));
+  updateChatDiscordStatus();
+}
+function updateSoundBtn(){
+  document.getElementById('btnSound').innerHTML = (soundOn?'🔔':'🔇')+' <span class="hbtn-label">音声</span>';
+  document.getElementById('btnVoice').innerHTML = (voiceOn?'🔊':'🔇')+' <span class="hbtn-label">読上</span>';
+}
+function applyConfigToUI(){
+  document.getElementById('setEEWSound').checked = cfg.eewSound;
+  document.getElementById('setEQSound').checked  = cfg.eqSound;
+  document.getElementById('setTTS').checked      = cfg.tts;
+  document.getElementById('setNotif').checked    = cfg.notif;
+  document.getElementById('setMinScale').value   = cfg.minScale;
+  document.getElementById('setWebhookUrl').value = cfg.webhookUrl||'';
+  document.getElementById('setWebhookMinScale').value = cfg.webhookMinScale;
+  document.getElementById('setWebhookEEW').checked = cfg.webhookEEW;
+  document.getElementById('setWebhookChat').checked = cfg.webhookChat||false;
+  document.getElementById('setGPS').checked      = cfg.gps;
+  document.getElementById('setWaveAnim').checked = cfg.waveAnim;
+  document.getElementById('setKyoshin').checked  = cfg.kyoshin;
+}
+
+/* ============================================================
+   タブ切り替え
+============================================================ */
+function switchTab(id, el){
+  document.querySelectorAll('.tabpanel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  el.classList.add('active');
+  if(id==='tab-chat') clearBadge('badge-chat');
+  if(id==='tab-warning') clearBadge('badge-warning');
+  if(id==='tab-jalert') clearBadge('badge-jalert');
+  if(id==='tab-radar') initRadarMap();
+  if(id==='tab-kyoshin') initKyoshinMap();
+}
+function spTab(id, el){
+  document.querySelectorAll('.sp-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.sp-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  el.classList.add('active');
+}
+function clearBadge(id){ const b=document.getElementById(id); b.textContent='0'; b.classList.remove('show'); }
+
+/* ============================================================
+   ログ
+============================================================ */
+function log(msg, type='info'){
+  const box = document.getElementById('logbox');
+  const d = document.createElement('div');
+  const t = new Date().toLocaleTimeString('ja-JP');
+  d.textContent = `[${t}] ${msg}`;
+  if(type==='err') d.classList.add('err');
+  if(type==='warn') d.classList.add('warn');
+  box.prepend(d);
+  while(box.childNodes.length>300) box.removeChild(box.lastChild);
+}
+
+/* ============================================================
+   モーダル
+============================================================ */
+function openModal(id){ document.getElementById(id).classList.add('open'); }
+function closeModal(id){ document.getElementById(id).classList.remove('open'); }
+
+/* ============================================================
+   トースト通知
+============================================================ */
+function showToast(title, sub, type='info', duration=6000){
+  const icons={eew:'🚨',tsunami:'🌊',eq:'🫨',info:'ℹ️',warn:'⚠️'};
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.innerHTML = `<span class="toast-icon">${icons[type]||'ℹ️'}</span>
+    <div class="toast-body"><div class="toast-title">${escapeHTML(title)}</div><div class="toast-sub">${escapeHTML(sub||'')}</div></div>
+    <button class="toast-close" onclick="this.parentElement.remove()">✕</button>`;
+  c.appendChild(t);
+  if(duration>0) setTimeout(()=>t.remove(), duration);
+  if(cfg.notif && Notification.permission==='granted'){
+    new Notification(title, {body:sub||''});
+  }
+}
+
+function notifyCritical(title, body, kind='jalert'){
+  showToast(title, body, kind==='eew'?'eew':'warn', 15000);
+  addJAlertEvent(title, body, kind);
+  if(cfg.webhookUrl){
+    sendDiscord(`🚨 **${title}**\n${body||''}`);
+  }
+}
+
+/* ============================================================
+   音声
+============================================================ */
+let soundOn = true, voiceOn = false;
+let audioCtx = null;
+function getAC(){
+  if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  return audioCtx;
+}
+function beep(freq=880, dur=0.18, type='sine', vol=0.15){
+  if(!soundOn) return;
+  try{
+    const ac = getAC();
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(ac.destination);
+    o.start(); g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime+dur);
+    o.stop(ac.currentTime+dur+0.02);
+  }catch(e){}
+}
+let jmaSoundCache = {};
+async function playJMASound(type){
+  if(!soundOn) return;
+  const SOUNDS = {
+    eew: 'https://www.data.jma.go.jp/eew/data/nc/sound/chime_strong.mp3',
+    eq:  'https://www.data.jma.go.jp/eew/data/nc/sound/chime_weak.mp3',
+  };
+  try{
+    if(!jmaSoundCache[type]){
+      const res = await fetch(SOUNDS[type]);
+      const buf = await res.arrayBuffer();
+      const ac = getAC();
+      jmaSoundCache[type] = await ac.decodeAudioData(buf);
+    }
+    const ac = getAC();
+    const src = ac.createBufferSource();
+    src.buffer = jmaSoundCache[type];
+    src.connect(ac.destination);
+    src.start();
+  }catch(e){ alertBeep(type==='eew'); }
+}
+function alertBeep(isEEW){
+  if(!soundOn) return;
+  if(isEEW){
+    beep(1400,0.12,'square',0.18); setTimeout(()=>beep(1400,0.12,'square',0.18),160);
+    setTimeout(()=>beep(1400,0.2,'square',0.2),320); setTimeout(()=>beep(1000,0.3,'sine',0.18),560);
+  } else {
+    beep(1100,0.18,'sine'); setTimeout(()=>beep(1100,0.18,'sine'),280);
+  }
+}
+function speak(text){
+  if(!voiceOn || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP'; u.rate = 1.0; u.pitch = 1.0;
+  window.speechSynthesis.speak(u);
+}
+function toggleSound(){
+  soundOn = !soundOn; cfg.eewSound=soundOn; cfg.eqSound=soundOn;
+  updateSoundBtn();
+  localStorage.setItem('bousai_cfg', JSON.stringify(cfg));
+}
+function toggleVoice(){
+  voiceOn = !voiceOn; cfg.tts = voiceOn;
+  updateSoundBtn();
+  document.getElementById('setTTS').checked = voiceOn;
+  localStorage.setItem('bousai_cfg', JSON.stringify(cfg));
+}
+
+/* ============================================================
+   通知許可
+============================================================ */
+async function requestNotif(){
+  if(!('Notification' in window)){ showToast('非対応','このブラウザは通知非対応です','warn'); return; }
+  const p = await Notification.requestPermission();
+  if(p==='granted'){
+    cfg.notif=true; document.getElementById('setNotif').checked=true;
+    showToast('通知を許可しました','重要な防災情報をお知らせします','info');
+    localStorage.setItem('bousai_cfg', JSON.stringify(cfg));
+  } else {
+    showToast('通知が拒否されました','ブラウザ設定から許可してください','warn');
+  }
+}
+
+/* ============================================================
+   MapLibre GL JS マップ初期化
+============================================================ */
+const MAP_STYLES = {
+  dark: 'https://tiles.openfreemap.org/styles/dark',
+  satellite: 'https://tiles.openfreemap.org/styles/dark',
+  topo: 'https://tiles.openfreemap.org/styles/positron',
+};
+
+let map;
+function initMap(){
+  map = new maplibregl.Map({
+    container:'map',
+    style: MAP_STYLES[cfg.mapStyle||'dark'],
+    center:[136.5, 36.0],
+    zoom:5.2, minZoom:3, maxZoom:16,
+    attributionControl:false
+  });
+  map.addControl(new maplibregl.NavigationControl({showCompass:false}), 'bottom-right');
+  map.addControl(new maplibregl.AttributionControl({compact:true}), 'bottom-right');
+  map.addControl(new maplibregl.ScaleControl({unit:'metric'}), 'bottom-left');
+
+  map.on('load', ()=>{
+    addStationLayer();
+    addRadarLayer();
+    addEpicenterLayer();
+    addShakeAreaLayer();
+    if(cfg.kyoshin) addKyoshinLayer();
+    log('MapLibre GL マップ初期化完了');
+  });
+  map.on('move', ()=>{ if(waveOrigin) animateWavefront(); });
+}
+
+function changeMapStyle(style){
+  cfg.mapStyle = style;
+  map.setStyle(MAP_STYLES[style]||MAP_STYLES.dark);
+  map.once('styledata', ()=>{
+    addStationLayer(); addRadarLayer(); addEpicenterLayer(); addShakeAreaLayer();
+    if(cfg.kyoshin) addKyoshinLayer();
+  });
+  saveSetting();
+}
+
+/* ============================================================
+   MapLibreレイヤー: 観測点
+============================================================ */
+let stations = [];
+const stationByName = new Map();
+const stationByCity = new Map();
+const stationStatus = new Map();
+
+async function loadStations(){
+  const dot = document.getElementById('dotStation');
+  dot.classList.add('warn');
+  try{
+    const url = 'https://gist.githubusercontent.com/iku55/79005d1896631ad6117bbe327b8162c1/raw/stations.json';
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    stations = data.map(s=>{
+      const lat=parseFloat(s.lat), lon=parseFloat(s.lon);
+      const obj={code:s.code,name:s.name,lat,lon,pref:s.pref&&s.pref.name,city:s.city&&s.city.name};
+      stationByName.set(obj.name,obj);
+      if(obj.city){
+        if(!stationByCity.has(obj.city)) stationByCity.set(obj.city,[]);
+        stationByCity.get(obj.city).push(obj);
+      }
+      return obj;
+    });
+    dot.classList.remove('warn'); dot.classList.add('ok');
+    log(`観測点データ読込: ${stations.length}件`);
+    updateStationLayer();
+  }catch(e){
+    dot.classList.remove('warn'); dot.classList.add('bad');
+    log('観測点データ取得失敗: '+e.message,'err');
+  }
+}
+
+function addStationLayer(){
+  if(!map.isStyleLoaded()) return;
+  if(map.getSource('stations')) return;
+  map.addSource('stations',{type:'geojson',data:buildStationGeoJSON()});
+  map.addLayer({
+    id:'stations-circle', type:'circle', source:'stations',
+    paint:{
+      'circle-radius':['interpolate',['linear'],['zoom'],3,1.5,6,2.5,10,4],
+      'circle-color':['get','color'],
+      'circle-opacity':0.9,
+      'circle-stroke-width':0.5,
+      'circle-stroke-color':'rgba(0,0,0,.3)'
+    }
+  });
+  map.on('click','stations-circle',(e)=>{
+    const f = e.features[0];
+    if(!f) return;
+    new maplibregl.Popup({closeButton:true})
+      .setLngLat(e.lngLat)
+      .setHTML(`<b>${f.properties.name}</b><br>震度: ${f.properties.scaleLabel}<br>${f.properties.pref||''}`)
+      .addTo(map);
+  });
+}
+
+function buildStationGeoJSON(){
+  return {
+    type:'FeatureCollection',
+    features: stations.map(s=>{
+      const key = stationStatus.get(s.code)||'Nodata';
+      return {
+        type:'Feature',
+        geometry:{type:'Point',coordinates:[s.lon,s.lat]},
+        properties:{
+          name:s.name, code:s.code, pref:s.pref,
+          color: hex(JDQ[key]||JDQ.Nodata),
+          scaleLabel: SCALE_LABEL[key]||'--',
+          scaleNum: SCALE_NUM[key]||-1
+        }
+      };
+    })
+  };
+}
+
+function updateStationLayer(){
+  if(!map || !map.getSource('stations')) return;
+  map.getSource('stations').setData(buildStationGeoJSON());
+}
+
+function stationMatchesForPoint(pt){
+  const matches = [];
+  const direct = stationByName.get(pt.addr);
+  if(direct) matches.push(direct);
+  if(stationByCity.has(pt.addr)) matches.push(...stationByCity.get(pt.addr));
+  if(matches.length === 0 && pt.addr){
+    const key = String(pt.addr).replace(/[市区町村郡]$/,'');
+    stations.forEach(s=>{
+      const city = s.city || '';
+      const name = s.name || '';
+      if((city && (city.includes(key) || key.includes(city.replace(/[市区町村郡]$/,'')))) ||
+         (name && (name.includes(key) || key.includes(name.replace(/[市区町村郡]$/,''))))){
+        matches.push(s);
+      }
+    });
+  }
+  return [...new Map(matches.map(s=>[s.code,s])).values()].slice(0,8);
+}
+
+function addShakeAreaLayer(){
+  if(!map.isStyleLoaded() || map.getSource('shake-area')) return;
+  map.addSource('shake-area',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+  map.addLayer({
+    id:'shake-area-fill', type:'fill', source:'shake-area',
+    paint:{
+      'fill-color':['get','color'],
+      'fill-opacity':0.16
+    }
+  });
+  map.addLayer({
+    id:'shake-area-line', type:'line', source:'shake-area',
+    paint:{
+      'line-color':['get','color'],
+      'line-width':2,
+      'line-dasharray':[2,1]
+    }
+  });
+}
+
+function updateShakeArea(points, level='weak'){
+  if(!map || !map.getSource('shake-area')) return;
+  const coords = points
+    .map(p=>[parseFloat(p.lon), parseFloat(p.lat)])
+    .filter(([lon,lat])=>Number.isFinite(lon)&&Number.isFinite(lat));
+  if(coords.length < 2){
+    map.getSource('shake-area').setData({type:'FeatureCollection',features:[]});
+    return;
+  }
+  const lons = coords.map(c=>c[0]);
+  const lats = coords.map(c=>c[1]);
+  const pad = level === 'strong' ? 0.45 : 0.28;
+  const minLon = Math.min(...lons) - pad, maxLon = Math.max(...lons) + pad;
+  const minLat = Math.min(...lats) - pad, maxLat = Math.max(...lats) + pad;
+  const color = level === 'strong' ? '#ff4444' : level === 'moderate' ? '#f5a623' : '#36d65a';
+  const polygon = {
+    type:'Feature',
+    geometry:{type:'Polygon',coordinates:[[
+      [minLon,minLat],[maxLon,minLat],[maxLon,maxLat],[minLon,maxLat],[minLon,minLat]
+    ]]},
+    properties:{color}
+  };
+  map.getSource('shake-area').setData({type:'FeatureCollection',features:[polygon]});
+  map.fitBounds([[minLon,minLat],[maxLon,maxLat]], {padding:70, duration:1400, maxZoom:level==='strong'?8.4:7.4});
+}
+
+function summarizeShakeAreas(points, maxKey){
+  const rows = points
+    .filter(p=>SCALE_NUM[p.key] >= 1)
+    .sort((a,b)=>SCALE_NUM[b.key]-SCALE_NUM[a.key]);
+  const strong = rows.filter(p=>SCALE_NUM[p.key] >= 4);
+  const titleLevel = strong.length ? 'strong' : rows.some(p=>SCALE_NUM[p.key] >= 3) ? 'moderate' : 'weak';
+  const title = titleLevel === 'strong' ? '強い揺れ' : titleLevel === 'moderate' ? 'やや強い反応' : '弱い反応';
+  const topAreas = [...new Set(rows.map(p=>p.area).filter(Boolean))].slice(0, 10);
+  const panel = document.getElementById('shakePanel');
+  const titleEl = document.getElementById('shakeTitle');
+  const body = document.getElementById('shakeBody');
+  if(panel && titleEl && body){
+    titleEl.textContent = title;
+    titleEl.style.background = titleLevel === 'strong'
+      ? 'linear-gradient(90deg,#d71920,#ff7a18)'
+      : titleLevel === 'moderate'
+        ? 'linear-gradient(90deg,#f5a623,#ffd166)'
+        : 'linear-gradient(90deg,#13a65a,#19d271)';
+    body.innerHTML = topAreas.map(a=>`<div>${escapeHTML(a)}</div>`).join('') +
+      `<div class="shake-meta">最大震度 ${SCALE_LABEL[maxKey]||'?'} / 観測 ${rows.length}点</div>`;
+    panel.classList.add('show');
+  }
+  updateShakeArea(rows, titleLevel);
+  clearTimeout(summarizeShakeAreas._timer);
+  summarizeShakeAreas._timer = setTimeout(()=>{
+    panel?.classList.remove('show');
+  }, 60000);
+}
+
+/* ============================================================
+   MapLibreレイヤー: 雨雲レーダー (メインマップ)
+============================================================ */
+let radarVisible = true;
+const RADAR_BASE = 'https://www.jma.go.jp/bosai/jmatile/data/nowc';
+let radarTimes = [];
+let radarIndex = 10;
+
+function addRadarLayer(){
+  if(!map.isStyleLoaded()) return;
+  if(map.getSource('radar')) return;
+  map.addSource('radar',{
+    type:'raster',
+    tiles:['https://www.jma.go.jp/bosai/jmatile/data/nowc/none/none/surf/hrpns/{z}/{x}/{y}.png'],
+    tileSize:256,
+    attribution:'気象庁 高解像度降水ナウキャスト'
+  });
+  map.addLayer({id:'radar-layer', type:'raster', source:'radar', paint:{'raster-opacity':0.55}});
+  fetchRadarTimes();
+}
+
+async function fetchRadarTimes(){
+  try{
+    const JMA_NOWC_URL = 'https://www.jma.go.jp/bosai/jmatile/data/nowc/targetTimes_N1.json';
+    const r = await fetchWithProxy(JMA_NOWC_URL);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    radarTimes = data.filter(d=>d.basetime&&d.validtime).map(d=>({base:d.basetime, valid:d.validtime}));
+    const slider = document.getElementById('radarSlider');
+    slider.max = radarTimes.length - 1;
+    slider.value = radarTimes.length - 1;
+    radarIndex = radarTimes.length - 1;
+    updateRadarTime(radarIndex);
+    // 雨雲タブのスライダーも更新
+    const ts = document.getElementById('radarTabSlider');
+    if(ts){ ts.max = radarTimes.length-1; ts.value = radarTimes.length-1; }
+    updateRadarTabTime(radarTimes.length-1);
+    log(`レーダー時刻取得: ${radarTimes.length}件`);
+  }catch(e){ log('レーダー時刻取得失敗: '+e.message,'warn'); }
+}
+
+function updateRadarTime(idx){
+  radarIndex = parseInt(idx);
+  const rt = radarTimes[radarIndex];
+  if(!rt) return;
+  const t = rt.valid;
+  const ts = `${t.slice(0,4)}/${t.slice(4,6)}/${t.slice(6,8)} ${t.slice(8,10)}:${t.slice(10,12)}`;
+  document.getElementById('radarTime').textContent = '雨雲レーダー: '+ts;
+  if(!map || !map.isStyleLoaded()) return;
+  const wasVisible = overlayState.radar;
+  try{
+    if(map.getLayer('radar-layer')) map.removeLayer('radar-layer');
+    if(map.getSource('radar')) map.removeSource('radar');
+  }catch(e){}
+  map.addSource('radar',{
+    type:'raster',
+    tiles:[`${RADAR_BASE}/${rt.base}/none/${rt.valid}/surf/hrpns/{z}/{x}/{y}.png`],
+    tileSize:256,
+    attribution:'気象庁 高解像度降水ナウキャスト'
+  });
+  map.addLayer({id:'radar-layer', type:'raster', source:'radar', paint:{'raster-opacity':0.55}});
+  if(!wasVisible) map.setLayoutProperty('radar-layer','visibility','none');
+}
+
+/* ============================================================
+   雨雲レーダータブ専用マップ
+============================================================ */
+let radarMap = null;
+let radarMapReady = false;
+let radarPlaying = false;
+let radarPlayTimer = null;
+let radarTabTimes = [];
+let radarTabIndex = 0;
+
+function initRadarMap(){
+  if(radarMapReady) return;
+  radarMapReady = true;
+  radarMap = new maplibregl.Map({
+    container:'radar-map',
+    style: MAP_STYLES[cfg.mapStyle||'dark'],
+    center:[136.5, 36.0],
+    zoom:5.0, minZoom:3, maxZoom:12,
+    attributionControl:false
+  });
+  radarMap.addControl(new maplibregl.NavigationControl({showCompass:false}), 'bottom-right');
+  radarMap.addControl(new maplibregl.AttributionControl({compact:true}), 'bottom-right');
+  radarMap.on('load', ()=>{
+    // 現在のレーダー時刻リストを使用
+    radarTabTimes = radarTimes;
+    radarTabIndex = radarTimes.length > 0 ? radarTimes.length - 1 : 0;
+    updateRadarTabMap(radarTabIndex);
+  });
+  log('雨雲レーダーマップ初期化');
+}
+
+function updateRadarTabTime(idx){
+  radarTabIndex = parseInt(idx);
+  if(radarTabTimes.length === 0){ radarTabTimes = radarTimes; }
+  const rt = radarTabTimes[radarTabIndex];
+  if(rt){
+    const t = rt.valid;
+    const ts = `${t.slice(0,4)}/${t.slice(4,6)}/${t.slice(6,8)} ${t.slice(8,10)}:${t.slice(10,12)}`;
+    document.getElementById('radarTabTime').textContent = '🌧 ' + ts;
+  }
+  updateRadarTabMap(radarTabIndex);
+}
+
+function updateRadarTabMap(idx){
+  if(!radarMap || !radarMap.isStyleLoaded()) return;
+  if(radarTabTimes.length === 0) return;
+  const rt = radarTabTimes[Math.min(idx, radarTabTimes.length-1)];
+  if(!rt) return;
+  try{
+    if(radarMap.getLayer('radar-tab-layer')) radarMap.removeLayer('radar-tab-layer');
+    if(radarMap.getSource('radar-tab')) radarMap.removeSource('radar-tab');
+  }catch(e){}
+  const tileUrl = `${RADAR_BASE}/${rt.base}/none/${rt.valid}/surf/hrpns/{z}/{x}/{y}.png`;
+  radarMap.addSource('radar-tab',{type:'raster',tiles:[tileUrl],tileSize:256,attribution:'気象庁'});
+  radarMap.addLayer({id:'radar-tab-layer',type:'raster',source:'radar-tab',paint:{'raster-opacity':0.7}});
+}
+
+function toggleRadarPlay(){
+  radarPlaying = !radarPlaying;
+  document.getElementById('radarPlayBtn').textContent = radarPlaying ? '⏸ 停止' : '▶ 再生';
+  if(radarPlaying) playRadarAnimation();
+  else { clearTimeout(radarPlayTimer); }
+}
+
+function playRadarAnimation(){
+  if(!radarPlaying) return;
+  const total = radarTabTimes.length;
+  if(total === 0) return;
+  radarTabIndex = (radarTabIndex + 1) % total;
+  const slider = document.getElementById('radarTabSlider');
+  if(slider) slider.value = radarTabIndex;
+  updateRadarTabTime(radarTabIndex);
+  radarPlayTimer = setTimeout(playRadarAnimation, 500);
+}
+
+/* ============================================================
+   強震モニタタブ専用マップ
+============================================================ */
+let kyoshinMap = null;
+let kyoshinMapReady = false;
+let kyoshinUpdateTimer = null;
+let kyoshinLastUrl = '';
+let kyoshinRetryOffset = 8;
+
+const KYOSHIN_IMAGE_COORDS = [
+  [128.0, 46.5],
+  [148.0, 46.5],
+  [148.0, 29.0],
+  [128.0, 29.0],
+];
+
+function kyoshinTimeStamp(offsetSec = 7){
+  const d = new Date(Date.now() - offsetSec * 1000);
+  d.setMilliseconds(0);
+  d.setSeconds(Math.floor(d.getSeconds() / 5) * 5);
+  const pad = n => String(n).padStart(2, '0');
+  const y = d.getFullYear();
+  const m = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+  return `${y}${m}${day}${hh}${mm}${ss}`;
+}
+
+function kyoshinImageUrl(ts = kyoshinTimeStamp()){
+  const day = ts.slice(0, 8);
+  return `http://www.kmoni.bosai.go.jp/data/map_img/RealTimeImg/jma_s/${day}/${ts}.jma_s.gif?_=${Date.now()}`;
+}
+
+function updateKyoshinStatus(ok, message=''){
+  const dot = document.getElementById('dotStation');
+  if(dot) dot.className = ok ? 'dot ok' : 'dot bad';
+  const time = document.getElementById('kyoshinTime');
+  if(time && message) time.textContent = message;
+}
+
+function initKyoshinMap(){
+  if(kyoshinMapReady) return;
+  kyoshinMapReady = true;
+  kyoshinMap = new maplibregl.Map({
+    container:'kyoshin-map',
+    style: MAP_STYLES[cfg.mapStyle||'dark'],
+    center:[136.5, 36.0],
+    zoom:5.0, minZoom:3, maxZoom:12,
+    attributionControl:false
+  });
+  kyoshinMap.addControl(new maplibregl.NavigationControl({showCompass:false}), 'bottom-right');
+  kyoshinMap.addControl(new maplibregl.AttributionControl({compact:true}), 'bottom-right');
+  kyoshinMap.on('load', ()=>{
+    addKyoshinToMap(kyoshinMap, 'kyoshin-tab');
+    startKyoshinUpdate();
+  });
+  log('強震モニタマップ初期化');
+}
+
+function addKyoshinToMap(targetMap, sourceId='kyoshin'){
+  if(!targetMap || targetMap.getSource(sourceId)) return;
+  const cache = Date.now();
+  targetMap.addSource(sourceId,{
+    type:'raster',
+    tiles:[`https://weather.tsukumijima.net/api/jisin/map?z={z}&x={x}&y={y}&_=${cache}`],
+    tileSize:256,
+    attribution:'NIED強震モニタ'
+  });
+  targetMap.addLayer({
+    id:sourceId+'-layer',
+    type:'raster',
+    source:sourceId,
+    paint:{
+      'raster-opacity':0.86,
+      'raster-resampling':'nearest'
+    }
+  });
+  updateKyoshinStatus(true, `強震モニタ ${new Date().toLocaleTimeString('ja-JP')} 表示中`);
+}
+
+function updateKyoshinImage(){
+  const cache = Date.now();
+  [
+    {m: map, id:'kyoshin'},
+    {m: kyoshinMap, id:'kyoshin-tab'}
+  ].forEach(({m,id})=>{
+    if(!m || !m.isStyleLoaded()) return;
+    try{
+      const visible = m.getLayer(id+'-layer')
+        ? m.getLayoutProperty(id+'-layer','visibility')
+        : undefined;
+      if(m.getLayer(id+'-layer')) m.removeLayer(id+'-layer');
+      if(m.getSource(id)) m.removeSource(id);
+      m.addSource(id,{
+        type:'raster',
+        tiles:[`https://weather.tsukumijima.net/api/jisin/map?z={z}&x={x}&y={y}&_=${cache}`],
+        tileSize:256,
+        attribution:'NIED強震モニタ'
+      });
+      m.addLayer({
+        id:id+'-layer',
+        type:'raster',
+        source:id,
+        paint:{'raster-opacity':0.86,'raster-resampling':'nearest'}
+      });
+      if(visible === 'none') m.setLayoutProperty(id+'-layer','visibility','none');
+    }catch(e){
+      updateKyoshinStatus(false, '強震モニタ更新失敗');
+      log('強震モニタ更新失敗: '+e.message, 'warn');
+    }
+  });
+  kyoshinLastUrl = String(cache);
+}
+
+function startKyoshinUpdate(){
+  clearInterval(kyoshinUpdateTimer);
+  const refresh = ()=>{
+    const t = new Date().toLocaleTimeString('ja-JP');
+    updateKyoshinImage();
+    updateKyoshinStatus(true, `強震モニタ ${t} 更新中`);
+  };
+  refresh();
+  kyoshinUpdateTimer = setInterval(refresh, 10000);
+}
+
+/* ============================================================
+   MapLibreレイヤー: 強震モニタ (メインマップ)
+============================================================ */
+function addKyoshinLayer(){
+  if(!map) return;
+  addKyoshinToMap(map, 'kyoshin');
+  startKyoshinUpdate();
+}
+
+/* ============================================================
+   オーバーレイ切り替え
+============================================================ */
+const overlayState = {station:true, radar:true, kyoshin:false, wave:true};
+function toggleOverlay(name, btn){
+  overlayState[name] = !overlayState[name];
+  btn.classList.toggle('active', overlayState[name]);
+  switch(name){
+    case 'station':
+      if(map.getLayer('stations-circle'))
+        map.setLayoutProperty('stations-circle','visibility',overlayState.station?'visible':'none');
+      break;
+    case 'radar':
+      if(map.getLayer('radar-layer'))
+        map.setLayoutProperty('radar-layer','visibility',overlayState.radar?'visible':'none');
+      document.getElementById('radarPanel').style.display = overlayState.radar?'':'none';
+      break;
+    case 'kyoshin':
+      const kImg = document.getElementById('kyoshin-img');
+      if(kImg) kImg.style.display = overlayState.kyoshin ? '' : 'none';
+      if(map.getLayer('kyoshin-layer'))
+        map.setLayoutProperty('kyoshin-layer','visibility',overlayState.kyoshin?'visible':'none');
+      else if(overlayState.kyoshin && map.isStyleLoaded()) addKyoshinLayer();
+      break;
+    case 'wave':
+      if(!overlayState.wave) clearWavefront();
+      break;
+  }
+}
+
+/* ============================================================
+   震源マーカー
+============================================================ */
+function addEpicenterLayer(){
+  if(!map.isStyleLoaded()) return;
+  if(map.getSource('epicenters')) return;
+  map.addSource('epicenters',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+  map.addLayer({
+    id:'epicenters-circle', type:'circle', source:'epicenters',
+    paint:{
+      'circle-radius':['interpolate',['linear'],['get','mag'],3,6,7,14],
+      'circle-color':'transparent',
+      'circle-stroke-color':'#ff4444',
+      'circle-stroke-width':2
+    }
+  });
+  map.on('click','epicenters-circle',(e)=>{
+    const f = e.features[0];
+    if(!f) return;
+    new maplibregl.Popup({closeButton:true})
+      .setLngLat(e.lngLat)
+      .setHTML(`<b>${f.properties.place}</b><br>${f.properties.mag}<br>震度${f.properties.scaleKey}`)
+      .addTo(map);
+  });
+}
+
+const epicenterFeatures = [];
+let waveCameraTimer = null;
+
+function addEpicenterMarker(lat, lon, mag, place, scaleKey){
+  const feat = {
+    type:'Feature',
+    geometry:{type:'Point',coordinates:[lon,lat]},
+    properties:{mag:parseFloat(mag)||3, place:place||'不明', scaleKey:scaleKey||'?'}
+  };
+  epicenterFeatures.unshift(feat);
+  if(epicenterFeatures.length>50) epicenterFeatures.pop();
+  if(map && map.getSource('epicenters'))
+    map.getSource('epicenters').setData({type:'FeatureCollection',features:epicenterFeatures});
+}
+
+function focusEpicenter(lat, lon, mag=4, mode='quake'){
+  if(!map || isNaN(lat) || isNaN(lon)) return;
+  const m = parseFloat(mag) || 4;
+  const zoom = mode === 'eew' ? 7.0 : Math.max(5.2, Math.min(7.2, 8.2 - m * 0.35));
+  map.flyTo({center:[lon,lat], zoom, speed:0.85, curve:1.2, essential:true});
+}
+
+function startWaveCamera(lat, lon, originMs, depth=10){
+  clearInterval(waveCameraTimer);
+  if(!map || isNaN(lat) || isNaN(lon)) return;
+  const update = ()=>{
+    const elapsed = Math.max(0, (Date.now() - originMs) / 1000);
+    const sKm = Math.sqrt((elapsed * 4.0) ** 2 + (depth || 10) ** 2);
+    let zoom = 7.2;
+    if(sKm > 80) zoom = 6.6;
+    if(sKm > 160) zoom = 6.0;
+    if(sKm > 280) zoom = 5.3;
+    if(sKm > 450) zoom = 4.7;
+    if(sKm > 700) zoom = 4.1;
+    map.easeTo({center:[lon,lat], zoom, duration:1200, essential:true});
+    if(elapsed > 180) clearInterval(waveCameraTimer);
+  };
+  update();
+  waveCameraTimer = setInterval(update, 2500);
+}
+
+/* ============================================================
+   EEW P/S波前面 (SVGアニメーション)
+============================================================ */
+function pWaveTravelTime(dist_km){ return dist_km/7.0; }
+function sWaveTravelTime(dist_km){ return dist_km/4.0; }
+
+let waveAnimFrame = null;
+let waveOrigin = null;
+
+function startWavefront(lat, lon, originTime, depth_km){
+  clearWavefront();
+  waveOrigin = {lat, lon, time:originTime, depth:depth_km||10};
+  animateWavefront();
+}
+function clearWavefront(){
+  if(waveAnimFrame) cancelAnimationFrame(waveAnimFrame);
+  waveAnimFrame = null;
+  document.getElementById('wavefront-svg').innerHTML='';
+  waveOrigin = null;
+}
+
+function animateWavefront(){
+  if(!waveOrigin||!overlayState.wave){ clearWavefront(); return; }
+  const now = Date.now();
+  const elapsed = (now - waveOrigin.time)/1000;
+  if(elapsed > 600){ clearWavefront(); return; }
+  const svg = document.getElementById('wavefront-svg');
+  svg.innerHTML = '';
+  const center = map.project([waveOrigin.lon, waveOrigin.lat]);
+  const refPt  = map.project([waveOrigin.lon+0.5, waveOrigin.lat]);
+  const pxPer05deg = Math.abs(refPt.x - center.x);
+  const kmPerPx = 44.0 / pxPer05deg;
+  ['p','s'].forEach(type=>{
+    const dist_km = (type==='p'? 7.0 : 4.0) * elapsed;
+    const r_px = dist_km / kmPerPx;
+    if(r_px < 1 || r_px > 3000) return;
+    const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    circle.setAttribute('cx', center.x);
+    circle.setAttribute('cy', center.y);
+    circle.setAttribute('r', r_px);
+    circle.setAttribute('fill','none');
+    circle.setAttribute('stroke', type==='p'?'rgba(74,158,255,0.75)':'rgba(255,68,68,0.75)');
+    circle.setAttribute('stroke-width','2');
+    circle.setAttribute('stroke-dasharray', type==='p'?'6,4':'');
+    svg.appendChild(circle);
+  });
+  waveAnimFrame = requestAnimationFrame(animateWavefront);
+}
+
+/* ============================================================
+   位置情報・到達予測
+============================================================ */
+let myLocation = null;
+async function locateMe(){
+  if(cfg.gps && navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      pos=>{ myLocation={lat:pos.coords.latitude,lon:pos.coords.longitude,method:'GPS'}; updateLocUI(); },
+      ()=>locateByIP(), {timeout:8000}
+    );
+  } else {
+    await locateByIP();
+  }
+}
+async function locateByIP(){
+  try{
+    const r = await fetch('https://ipapi.co/json/');
+    const d = await r.json();
+    myLocation = {lat:d.latitude, lon:d.longitude, method:'IP'};
+    updateLocUI();
+  }catch(e){ log('位置情報取得失敗','err'); }
+}
+function updateLocUI(){
+  if(!myLocation) return;
+  document.getElementById('myLat').textContent = myLocation.lat.toFixed(4);
+  document.getElementById('myLon').textContent = myLocation.lon.toFixed(4);
+}
+function calcArrival(eewLat, eewLon, depth){
+  if(!myLocation) return null;
+  const d = haversine(myLocation.lat,myLocation.lon,eewLat,eewLon);
+  const slant = Math.sqrt(d*d + depth*depth);
+  return {p: pWaveTravelTime(slant), s: sWaveTravelTime(slant)};
+}
+function haversine(lat1,lon1,lat2,lon2){
+  const R=6371;
+  const dLat=(lat2-lat1)*Math.PI/180;
+  const dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+/* ============================================================
+   EEW処理
+============================================================ */
+let eewState = null;
+let eewCountdownTimer = null;
+
+function handleEEW(d){
+  if(d.isCancel){
+    resetEEW();
+    log('EEW キャンセル報');
+    showToast('EEWキャンセル','緊急地震速報がキャンセルされました','info',4000);
+    return;
+  }
+
+  const key = wolfxIntToKey(d.MaxIntensity);
+  const isWarn = d.isWarn||false;
+  const isFinal = d.isFinal||false;
+  const depth = (d.Depth===undefined||d.Depth===null||d.Depth==='')?10:parseFloat(d.Depth);
+  const lat = parseFloat(d.Latitude);
+  const lon = parseFloat(d.Longitude);
+  const mag = d.Magunitude??d.Magnitude??'?';
+
+  const banner = document.getElementById('eewBanner');
+  banner.className = isWarn?'alert':'forecast';
+  document.getElementById('eewTitle').textContent =
+    `${d.Title||'緊急地震速報'} 第${d.Serial??'?'}報${isFinal?' (最終報)':''}`;
+  document.getElementById('eewGrid').innerHTML = `
+    <span>震源</span><b>${d.Hypocenter||'解析中'}</b>
+    <span>M</span><b>${mag}</b>
+    <span>深さ</span><b>${depth}km</b>
+    <span>最大予測震度</span><b style="color:${hex(JDQ[key]||JDQ.Nodata)}">${d.MaxIntensity||'解析中'}</b>
+    <span>発表時刻</span><b>${d.AnnouncedTime||''}</b>
+    <span>発生時刻</span><b>${d.OriginTime||''}</b>
+  `;
+
+  if(cfg.eewSound) playJMASound('eew');
+  const ttsText = isWarn
+    ? `緊急地震速報。${d.Hypocenter||'不明'}で地震発生。最大震度${d.MaxIntensity||'不明'}。マグニチュード${mag}。直ちに身を守ってください。`
+    : `緊急地震速報予報。${d.Hypocenter||'不明'}でM${mag}。最大震度${d.MaxIntensity||'不明'}と予測。`;
+  if(cfg.tts) speak(ttsText);
+
+  const toastMsg = `${d.Hypocenter||'?'} M${mag} 最大震度${d.MaxIntensity||'?'}`;
+  showToast(isWarn?'⚠️ 緊急地震速報(警報)':'緊急地震速報(予報)', toastMsg, 'eew', 15000);
+
+  if(cfg.webhookEEW && cfg.webhookUrl)
+    sendDiscord(`🚨 **緊急地震速報** 第${d.Serial??'?'}報\n震源: ${d.Hypocenter||'?'}\nM${mag} 深さ${depth}km\n最大予測震度: **${d.MaxIntensity||'?'}**\n${isWarn?'⚠️ **警報**':'予報'}`);
+
+  if(isNaN(lat)||isNaN(lon)) return;
+  const originMs = parseOriginTime(d.OriginTime);
+  eewState = {lat, lon, depth, originMs};
+  if(overlayState.wave) startWavefront(lat, lon, originMs, depth);
+  addEpicenterMarker(lat, lon, mag, d.Hypocenter, key);
+  focusEpicenter(lat, lon, mag, 'eew');
+  startWaveCamera(lat, lon, originMs, depth);
+  if(isWarn) addJAlertEvent('緊急地震速報(警報)', `${d.Hypocenter||'?'} M${mag} 最大震度${d.MaxIntensity||'?'}`, 'eew');
+
+  if(myLocation){
+    const arr = calcArrival(lat, lon, depth);
+    if(arr){
+      const nowSec = (Date.now() - (originMs||Date.now()))/1000;
+      const pRem = Math.max(0, Math.round(arr.p - nowSec));
+      const sRem = Math.max(0, Math.round(arr.s - nowSec));
+      document.getElementById('pWaveRow').style.display='';
+      document.getElementById('sWaveRow').style.display='';
+      document.getElementById('pWaveTime').textContent = pRem+'秒後';
+      document.getElementById('sWaveTime').textContent = sRem+'秒後';
+      const cd = document.getElementById('eewCountdown');
+      cd.style.display='block'; cd.textContent = sRem+'s';
+      startCountdown(originMs, arr.s);
+    }
+  }
+  log(`EEW: ${d.Hypocenter||'?'} M${mag} 最大${d.MaxIntensity||'?'} (${isWarn?'警報':'予報'})`);
+}
+
+function parseOriginTime(str){
+  if(!str) return Date.now();
+  try{ return new Date(str.replace(/\//g,'-')).getTime(); }catch(e){ return Date.now(); }
+}
+
+function resetEEW(){
+  const banner = document.getElementById('eewBanner');
+  banner.className = 'idle';
+  document.getElementById('eewTitle').textContent = '緊急地震速報 受信待機中…';
+  document.getElementById('eewGrid').innerHTML = '';
+  clearWavefront();
+  clearInterval(waveCameraTimer);
+  clearInterval(eewCountdownTimer);
+  document.getElementById('eewCountdown').style.display='none';
+  document.getElementById('pWaveRow').style.display='none';
+  document.getElementById('sWaveRow').style.display='none';
+}
+
+function startCountdown(originMs, sWaveSec){
+  clearInterval(eewCountdownTimer);
+  eewCountdownTimer = setInterval(()=>{
+    const nowSec = (Date.now()-originMs)/1000;
+    const rem = Math.max(0, Math.round(sWaveSec - nowSec));
+    document.getElementById('eewCountdown').textContent = rem+'s';
+    document.getElementById('sWaveTime').textContent = rem+'秒後';
+    if(rem<=0){
+      clearInterval(eewCountdownTimer);
+      document.getElementById('eewCountdown').textContent = '到達';
+    }
+  },500);
+}
+
+/* ============================================================
+   P2P地震情報
+============================================================ */
+let p2pSocket=null, p2pRetry=0;
+const eqHistory = [];
+
+function connectP2P(){
+  const dot = document.getElementById('dotP2P');
+  dot.className = 'dot warn';
+  try{
+    p2pSocket = new WebSocket('wss://api.p2pquake.net/v2/ws');
+  }catch(e){ retryP2P(); return; }
+  p2pSocket.onopen = ()=>{ dot.className='dot ok'; p2pRetry=0; log('P2P地震情報 接続'); };
+  p2pSocket.onclose = ()=>{ dot.className='dot bad'; log('P2P地震情報 切断 再接続…','warn'); retryP2P(); };
+  p2pSocket.onerror = ()=>{ dot.className='dot bad'; };
+  p2pSocket.onmessage = ev=>{
+    let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
+    switch(d.code){
+      case 551: handleEQInfo(d); break;
+      case 552: handleTsunami(d); break;
+      case 554: handleP2PEEW(d); break;
+      default: break;
+    }
+  };
+}
+function retryP2P(){ p2pRetry++; setTimeout(connectP2P, Math.min(30000,1000*Math.pow(1.6,p2pRetry))); }
+
+function handleEQInfo(data){
+  const eq = data.earthquake||{};
+  const hyp = eq.hypocenter||{};
+  const maxKey = p2pScaleToKey(eq.maxScale);
+  const mag = hyp.magnitude??'?';
+  const depth = hyp.depth>=0?hyp.depth+'km':'不明';
+
+  const shakePoints = [];
+  (data.points||[]).forEach(pt=>{
+    const key=p2pScaleToKey(pt.scale);
+    const matches = stationMatchesForPoint(pt);
+    matches.forEach(s=>{
+      stationStatus.set(s.code,key);
+      shakePoints.push({lat:s.lat, lon:s.lon, area:pt.addr || s.city || s.name, key, scale:pt.scale});
+    });
+  });
+  updateStationLayer();
+  if(shakePoints.length > 0) summarizeShakeAreas(shakePoints, maxKey);
+
+  if(SCALE_NUM[maxKey] < cfg.minScale){
+    log(`弱い揺れ検知: ${hyp.name||'震源不明'} 最大震度${SCALE_LABEL[maxKey]||'?'} (${shakePoints.length}点)`);
+    return;
+  }
+
+  if(cfg.eqSound && SCALE_NUM[maxKey]>=4) playJMASound('eq');
+  if(cfg.tts && SCALE_NUM[maxKey]>=3)
+    speak(`地震情報。${hyp.name||'震源不明'}でM${mag}、深さ${depth}の地震がありました。最大震度${SCALE_LABEL[maxKey]||'不明'}。`);
+
+  const entry = {
+    time: eq.time||new Date().toISOString(),
+    place: hyp.name||'不明', mag, depth,
+    maxKey, points:data.points||[],
+    lat:hyp.latitude, lon:hyp.longitude,
+    tsunami: eq.domesticTsunami||'None',
+    source: 'live'
+  };
+  eqHistory.unshift(entry);
+  if(eqHistory.length>500) eqHistory.pop();
+  persistHistory();
+
+  const b = document.getElementById('badge-history');
+  b.textContent = parseInt(b.textContent||'0')+1;
+  b.classList.add('show');
+
+  renderEQList();
+  renderHistory();
+
+  const scaleNum = SCALE_NUM[maxKey]||-1;
+  if(entry.lat&&entry.lon){
+    addEpicenterMarker(entry.lat, entry.lon, mag, entry.place, maxKey);
+    if(shakePoints.length === 0) focusEpicenter(parseFloat(entry.lat), parseFloat(entry.lon), mag, 'quake');
+  }
+  showToast(`🫨 震度${SCALE_LABEL[maxKey]||'?'} ${entry.place}`, `M${mag} 深さ${depth}`, 'eq');
+  if(scaleNum >= 5) addJAlertEvent('強い地震情報', `${entry.place} M${mag} 最大震度${SCALE_LABEL[maxKey]||'?'} 津波:${entry.tsunami==='None'?'なし':entry.tsunami}`, 'quake');
+
+  if(cfg.webhookUrl && scaleNum>=cfg.webhookMinScale)
+    sendDiscord(`🫨 **地震情報**\n震源: **${entry.place}** (深さ${depth})\nM${mag}・最大震度 **${SCALE_LABEL[maxKey]||'?'}**\n発生: ${eq.time||''}\n津波: ${entry.tsunami==='None'?'なし':entry.tsunami}`);
+
+  log(`地震: ${entry.place} M${mag} 最大震度${SCALE_LABEL[maxKey]||'?'}`);
+}
+
+function handleTsunami(data){
+  const box = document.getElementById('tsunamiBox');
+  if(!data.areas||data.areas.length===0||data.cancelled){
+    box.className=''; box.textContent='現在、津波の心配はありません。'; return;
+  }
+  box.className='alert';
+  box.innerHTML = '⚠️ 津波予報が発表されています:<br>'+data.areas.map(a=>`<b>${a.name}</b>: ${a.grade||''}`).join('<br>');
+  showToast('🌊 津波予報','詳細はサイドパネルの津波タブをご確認ください','tsunami', 0);
+  addJAlertEvent('津波情報', data.areas.map(a=>`${a.name}: ${a.grade||''}`).join(' / '), 'tsunami');
+  if(cfg.tts) speak('津波予報が発表されています。直ちに高台へ避難してください。');
+  log('津波予報受信','warn');
+}
+
+function handleP2PEEW(data){
+  const eq = data.earthquake || {};
+  const hyp = eq.hypocenter || data.hypocenter || {};
+  const issue = data.issue || {};
+  const maxKey = p2pScaleToKey(eq.maxScale ?? data.maxScale);
+  const maxIntensity = SCALE_LABEL[maxKey] || data.maxIntensity || '不明';
+  const isCancel = !!(data.cancelled || data.isCancel || issue.type === 'Cancel' || issue.status === '取消');
+  const isFinal = !!(issue.type === 'Final' || issue.status === '最終' || data.isFinal);
+  const isWarn = !!(data.isWarn || issue.type === 'Warning' || issue.status === '警報' || SCALE_NUM[maxKey] >= 4);
+
+  handleEEW({
+    isCancel,
+    isFinal,
+    isWarn,
+    Title: '緊急地震速報',
+    Serial: issue.serial ?? issue.revision ?? data.serial ?? '?',
+    Hypocenter: hyp.name || eq.hypocenterName || '解析中',
+    Depth: hyp.depth ?? eq.depth ?? 10,
+    Latitude: hyp.latitude ?? hyp.lat ?? eq.latitude,
+    Longitude: hyp.longitude ?? hyp.lon ?? eq.longitude,
+    Magunitude: hyp.magnitude ?? eq.magnitude ?? data.magnitude ?? '?',
+    MaxIntensity: maxIntensity,
+    AnnouncedTime: issue.time || data.time || '',
+    OriginTime: eq.originTime || hyp.originTime || data.originTime || '',
+  });
+  log('P2P EEW受信: '+JSON.stringify(data).slice(0,120));
+}
+
+/* ============================================================
+   地震履歴: ローカル永続化 + API取得
+============================================================ */
+function persistHistory(){
+  try{
+    const lite = eqHistory.slice(0,200).map(e=>({
+      time:e.time, place:e.place, mag:e.mag, depth:e.depth,
+      maxKey:e.maxKey, lat:e.lat, lon:e.lon, tsunami:e.tsunami, source:e.source
+    }));
+    localStorage.setItem('bousai_history', JSON.stringify(lite));
+  }catch(e){}
+}
+
+function loadPersistedHistory(){
+  try{
+    const data = JSON.parse(localStorage.getItem('bousai_history')||'[]');
+    data.forEach(e=>{
+      if(!eqHistory.find(x=>x.time===e.time&&x.place===e.place)){
+        eqHistory.push({...e, points:[]});
+      }
+    });
+    eqHistory.sort((a,b)=>new Date(b.time)-new Date(a.time));
+    renderEQList();
+    renderHistory();
+    log(`保存済み地震履歴 ${data.length}件 読込`);
+  }catch(e){}
+}
+
+async function loadHistoryFromAPI(){
+  const btn = document.querySelector('button[onclick="loadHistoryFromAPI()"]');
+  if(btn){ btn.textContent = '⏳ 取得中…'; btn.disabled=true; }
+  try{
+    // P2P地震情報 REST API: 過去地震一覧 (最大100件取得)
+    const url = 'https://api.p2pquake.net/v2/jma/quake?limit=100&offset=0';
+    const r = await fetch(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    let added = 0;
+    data.forEach(item=>{
+      const eq = item.earthquake||{};
+      const hyp = eq.hypocenter||{};
+      const maxKey = p2pScaleToKey(eq.maxScale);
+      const entry = {
+        time: eq.time||item.time||new Date().toISOString(),
+        place: hyp.name||'不明',
+        mag: hyp.magnitude??'?',
+        depth: hyp.depth>=0?hyp.depth+'km':'不明',
+        maxKey,
+        points: item.points||[],
+        lat: hyp.latitude, lon: hyp.longitude,
+        tsunami: eq.domesticTsunami||'None',
+        source: 'api'
+      };
+      if(!eqHistory.find(x=>x.time===entry.time&&x.place===entry.place)){
+        eqHistory.push(entry);
+        added++;
+      }
+    });
+    eqHistory.sort((a,b)=>new Date(b.time)-new Date(a.time));
+    persistHistory();
+    renderEQList();
+    renderHistory();
+    showToast(`過去履歴取得完了`, `${added}件追加 (計${eqHistory.length}件)`, 'info');
+    log(`API地震履歴取得: ${added}件追加`);
+  }catch(e){
+    showToast('履歴取得失敗', e.message, 'warn');
+    log('地震履歴API取得失敗: '+e.message,'err');
+  }
+  if(btn){ btn.textContent = '📥 過去1ヶ月取得'; btn.disabled=false; }
+}
+
+/* ============================================================
+   地震リスト描画
+============================================================ */
+function renderEQList(){
+  const ul = document.getElementById('eqList');
+  const cnt = document.getElementById('eqCount');
+  if(eqHistory.length===0){ ul.innerHTML='<li style="padding:14px;color:var(--sub);font-size:12px;">受信待機中…</li>'; cnt.textContent='0'; return; }
+  cnt.textContent = eqHistory.length;
+  ul.innerHTML = eqHistory.slice(0,30).map((e,i)=>{
+    const c = JDQ[e.maxKey]||JDQ.Nodata;
+    const fg = (SCALE_NUM[e.maxKey]>=4)?'#fff':'#000';
+    const t = (e.time||'').replace(/T/,' ').slice(0,16);
+    return `<li class="eq-item" onclick="showEQDetail(${i})">
+      <span class="scale-chip" style="background:${hex(c)};color:${fg}">${SCALE_LABEL[e.maxKey]||'?'}</span>
+      <span class="eq-meta"><span class="place">${escapeHTML(e.place)}</span><br>
+      <span class="detail">M${e.mag} 深${e.depth} ${t}</span></span>
+    </li>`;
+  }).join('');
+}
+
+/* ============================================================
+   地震詳細モーダル
+============================================================ */
+function showEQDetail(i){
+  const e = eqHistory[i];
+  if(!e) return;
+  document.getElementById('modalTitle').textContent = `地震詳細: ${e.place}`;
+  document.getElementById('modalGrid').innerHTML = `
+    <dt>発生時刻</dt><dd>${(e.time||'').replace('T',' ').slice(0,19)}</dd>
+    <dt>震源地</dt><dd>${escapeHTML(e.place)}</dd>
+    <dt>マグニチュード</dt><dd>M${e.mag}</dd>
+    <dt>深さ</dt><dd>${e.depth}</dd>
+    <dt>最大震度</dt><dd>${SCALE_LABEL[e.maxKey]||'?'}</dd>
+    <dt>津波</dt><dd>${e.tsunami==='None'?'なし':e.tsunami}</dd>
+    <dt>データ元</dt><dd>${e.source==='api'?'API(過去)':'リアルタイム'}</dd>
+  `;
+  const pts = (e.points||[]).slice(0,50).map(p=>{
+    const k=p2pScaleToKey(p.scale);
+    const c=hex(JDQ[k]||JDQ.Nodata);
+    return `<span style="display:inline-block;background:${c};color:${SCALE_NUM[k]>=4?'#fff':'#000'};padding:2px 7px;border-radius:4px;font-size:11px;margin:2px;">${escapeHTML(p.addr)} 震度${SCALE_LABEL[k]||'?'}</span>`;
+  }).join('');
+  document.getElementById('modalPoints').innerHTML = pts;
+  openModal('eqModal');
+  if(e.lat&&e.lon&&map) map.flyTo({center:[e.lon,e.lat],zoom:7});
+}
+
+/* ============================================================
+   地震履歴タブ
+============================================================ */
+let historyMinScale = 0;
+function filterHistory(min, btn){
+  historyMinScale = min;
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderHistory();
+}
+function renderHistory(){
+  const filtered = eqHistory.filter(e=>SCALE_NUM[e.maxKey]>=historyMinScale);
+  document.getElementById('historyCount').textContent = filtered.length+'件';
+  const el = document.getElementById('history-list');
+  if(filtered.length===0){ el.innerHTML='<div style="color:var(--sub);font-size:12px;padding:12px;">該当する地震はありません。</div>'; return; }
+  el.innerHTML = filtered.map((e,i)=>{
+    const c = hex(JDQ[e.maxKey]||JDQ.Nodata);
+    const fg = (SCALE_NUM[e.maxKey]>=4)?'#fff':'#000';
+    const t = (e.time||'').replace('T',' ').slice(0,16);
+    const src = e.source==='api' ? '<span class="history-source-badge api">API</span>' : '';
+    return `<div class="history-item" onclick="showEQDetail(${eqHistory.indexOf(e)})">
+      <div class="h-head">
+        <span class="scale-chip" style="background:${c};color:${fg};font-size:14px;padding:4px 10px;">${SCALE_LABEL[e.maxKey]||'?'}</span>
+        <div>
+          <div style="font-weight:700; font-size:13px;">${escapeHTML(e.place)}${src}</div>
+          <div style="font-size:11px; color:var(--sub);">${t}</div>
+        </div>
+      </div>
+      <div class="h-body">M${e.mag} 深さ${e.depth} 津波:${e.tsunami==='None'?'なし':escapeHTML(e.tsunami)}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ============================================================
+   警報・注意報 (気象庁 bosai API)
+============================================================ */
+let warningData = null;
+let warningUpdateInterval = null;
+
+const WARNING_TYPES = {
+  '大雨特別警報': {level:'warn', emoji:'🌧'},
+  '暴風特別警報': {level:'warn', emoji:'💨'},
+  '暴風雪特別警報': {level:'warn', emoji:'🌨'},
+  '大雪特別警報': {level:'warn', emoji:'❄️'},
+  '波浪特別警報': {level:'warn', emoji:'🌊'},
+  '高潮特別警報': {level:'warn', emoji:'🌊'},
+  '大雨警報': {level:'warn', emoji:'🌧'},
+  '洪水警報': {level:'warn', emoji:'💧'},
+  '暴風警報': {level:'warn', emoji:'💨'},
+  '暴風雪警報': {level:'warn', emoji:'🌨'},
+  '大雪警報': {level:'warn', emoji:'❄️'},
+  '波浪警報': {level:'warn', emoji:'🌊'},
+  '高潮警報': {level:'warn', emoji:'🌊'},
+  '大雨注意報': {level:'advisory', emoji:'🌧'},
+  '洪水注意報': {level:'advisory', emoji:'💧'},
+  '強風注意報': {level:'advisory', emoji:'💨'},
+  '風雪注意報': {level:'advisory', emoji:'🌨'},
+  '大雪注意報': {level:'advisory', emoji:'❄️'},
+  '波浪注意報': {level:'advisory', emoji:'🌊'},
+  '高潮注意報': {level:'advisory', emoji:'🌊'},
+  '雷注意報': {level:'advisory', emoji:'⚡'},
+  '濃霧注意報': {level:'advisory', emoji:'🌫'},
+  '乾燥注意報': {level:'advisory', emoji:'🔥'},
+  '霜注意報': {level:'advisory', emoji:'🌡'},
+  '着氷注意報': {level:'advisory', emoji:'🧊'},
+  '着雪注意報': {level:'advisory', emoji:'❄️'},
+};
+
+const WARNING_CODE_NAMES = {
+  '02':'暴風雪警報','03':'大雨警報','04':'洪水警報','05':'暴風警報','06':'大雪警報','07':'波浪警報','08':'高潮警報',
+  '10':'大雨注意報','12':'大雪注意報','13':'風雪注意報','14':'雷注意報','15':'強風注意報','16':'波浪注意報','17':'融雪注意報',
+  '18':'洪水注意報','19':'高潮注意報','20':'濃霧注意報','21':'乾燥注意報','22':'なだれ注意報','23':'低温注意報',
+  '24':'霜注意報','25':'着氷注意報','26':'着雪注意報',
+  '32':'暴風雪特別警報','33':'大雨特別警報','35':'暴風特別警報','36':'大雪特別警報','37':'波浪特別警報','38':'高潮特別警報'
+};
+let jmaAreaNameMap = null;
+
+async function getJmaAreaNameMap(){
+  if(jmaAreaNameMap) return jmaAreaNameMap;
+  jmaAreaNameMap = {};
+  const r = await fetchWithProxy('https://www.jma.go.jp/bosai/common/const/area.json');
+  if(!r.ok) throw new Error('地域名取得 HTTP '+r.status);
+  const area = await r.json();
+  ['offices','class10s','class15s','class20s'].forEach(group=>{
+    Object.entries(area[group]||{}).forEach(([code, item])=>{
+      jmaAreaNameMap[code] = item.name || code;
+    });
+  });
+  return jmaAreaNameMap;
+}
+
+function warningName(w){
+  return w.type || WARNING_CODE_NAMES[String(w.code||'').padStart(2,'0')] || `警報コード${w.code||'?'}`;
+}
+
+function warningMeta(name){
+  return WARNING_TYPES[name] || {
+    level: name.includes('特別警報') || name.includes('警報') ? 'warn' : 'advisory',
+    emoji: name.includes('雷') ? '⚡' : name.includes('雪') ? '❄️' : name.includes('波') || name.includes('高潮') ? '🌊' : '⚠️'
+  };
+}
+
+const jalertEvents = [];
+function addJAlertEvent(title, body='', kind='jalert'){
+  const key = `${title}|${body}`;
+  if(jalertEvents[0]?.key === key) return;
+  const event = {
+    key,
+    title,
+    body,
+    kind,
+    time: new Date().toLocaleString('ja-JP',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})
+  };
+  jalertEvents.unshift(event);
+  if(jalertEvents.length > 50) jalertEvents.pop();
+  renderJAlertEvents();
+  const active = document.querySelector('.tab.active');
+  if(!active || active.dataset.tab !== 'tab-jalert'){
+    const b = document.getElementById('badge-jalert');
+    if(b){ b.textContent = parseInt(b.textContent||'0') + 1; b.classList.add('show'); }
+  }
+}
+
+function renderJAlertEvents(){
+  const list = document.getElementById('jalertList');
+  const count = document.getElementById('jalertCount');
+  const updated = document.getElementById('jalertUpdated');
+  if(!list) return;
+  if(count) count.textContent = `${jalertEvents.length}件`;
+  if(updated) updated.textContent = jalertEvents[0] ? `最新: ${jalertEvents[0].time}` : '';
+  if(jalertEvents.length === 0){
+    list.innerHTML = `<div class="jalert-item">
+      <div class="j-head">🚨 Jアラート監視</div>
+      <div class="j-body">緊急地震速報・大津波警報・特別警報・国民保護情報を重大通知としてまとめます。</div>
+    </div>`;
+    return;
+  }
+  list.innerHTML = jalertEvents.map(e=>{
+    const cls = e.kind === 'eew' || e.kind === 'tsunami' ? 'critical' : 'warn';
+    return `<div class="jalert-item ${cls}">
+      <div class="j-head">🚨 ${escapeHTML(e.title)} <span style="margin-left:auto;color:var(--sub);font-size:11px;font-weight:500;">${escapeHTML(e.time)}</span></div>
+      <div class="j-body">${escapeHTML(e.body)}</div>
+    </div>`;
+  }).join('');
+}
+
+function loadJAlertInfo(){
+  renderJAlertEvents();
+  showToast('Jアラート情報', '重大通知の履歴を更新しました', 'info', 3000);
+}
+
+async function loadWarnings(){
+  const el = document.getElementById('warningList');
+  const prefCode = document.getElementById('warnPrefSelect').value;
+  el.innerHTML = '<div class="warning-empty"><span class="spinner"></span> 取得中…</div>';
+  document.getElementById('warningCount').textContent = '';
+
+  try{
+    const areaNames = await getJmaAreaNameMap();
+    // 気象庁 防災情報API
+    const url = `https://www.jma.go.jp/bosai/warning/data/warning/${prefCode}.json`;
+    const r = await fetchWithProxy(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+
+    const updated = data.reportDatetime
+      ? new Date(data.reportDatetime).toLocaleString('ja-JP',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})
+      : '';
+    document.getElementById('warningUpdated').textContent = updated ? `更新: ${updated}` : '';
+
+    // 警報・注意報の抽出
+    const warnings = [];
+    const areas = data.areaTypes || [];
+    areas.forEach(areaType=>{
+      (areaType.areas||[]).forEach(area=>{
+        const areaName = area.name || areaNames[area.code] || area.code || '不明地域';
+        (area.warnings||[]).forEach(w=>{
+          if(w.status !== '発表' && w.status !== '継続') return;
+          const typeName = warningName(w);
+          const meta = warningMeta(typeName);
+          warnings.push({
+            type: typeName,
+            status: w.status||'',
+            areaName,
+            level: meta.level,
+            emoji: meta.emoji,
+          });
+        });
+      });
+    });
+
+    document.getElementById('warningCount').textContent = `${warnings.length}件`;
+
+    if(warnings.length === 0){
+      el.innerHTML = '<div class="warning-empty">✅ 現在、発表中の警報・注意報はありません。</div>';
+      return;
+    }
+
+    // 警報バッジカウント
+    const warnCount = warnings.filter(w=>w.level==='warn').length;
+    if(warnCount > 0){
+      const b = document.getElementById('badge-warning');
+      b.textContent = warnCount;
+      b.classList.add('show');
+    }
+    const special = warnings.filter(w=>w.type.includes('特別警報'));
+    if(special.length > 0){
+      addJAlertEvent('気象特別警報', special.map(w=>`${w.type}: ${w.areaName}`).slice(0,8).join(' / '), 'warning');
+    }
+
+    // レベル順でソート（警報 > 注意報）
+    warnings.sort((a,b)=> a.level==='warn'&&b.level!=='warn'?-1:b.level==='warn'&&a.level!=='warn'?1:0);
+
+    // 同じ警報タイプごとにエリアをまとめる
+    const grouped = {};
+    warnings.forEach(w=>{
+      const key = w.type;
+      if(!grouped[key]) grouped[key] = {...w, areas:[]};
+      grouped[key].areas.push(w.areaName);
+    });
+
+    el.innerHTML = Object.values(grouped).map(w=>{
+      const badge = w.level==='warn'
+        ? `<span class="warning-badge danger">${w.status}</span>`
+        : `<span class="warning-badge warn">${w.status}</span>`;
+      return `<div class="warning-item level-${w.level}">
+        <div class="w-head">
+          <span style="font-size:18px;">${w.emoji}</span>
+          <span class="w-title">${escapeHTML(w.type)}</span>
+          ${badge}
+        </div>
+        <div class="warning-area">対象地域: ${w.areas.map(escapeHTML).join('、')}</div>
+      </div>`;
+    }).join('');
+
+    warningData = data;
+    log(`警報情報更新: ${warnings.length}件 (${prefCode})`);
+  }catch(e){
+    el.innerHTML = `<div class="warning-empty">
+      ⚠️ 警報情報の取得に失敗しました。<br>
+      <small style="color:var(--sub2);">${escapeHTML(e.message)}</small><br>
+      <a href="https://www.jma.go.jp/bosai/warning/" target="_blank" style="font-size:12px; margin-top:8px; display:inline-block;">気象庁 公式警報・注意報</a>
+    </div>`;
+    log('警報情報取得失敗: '+e.message,'warn');
+  }
+}
+
+/* ============================================================
+   Wolfx EEW WebSocket
+============================================================ */
+let wolfxSocket=null, wolfxRetry=0;
+function connectWolfx(){
+  const dot = document.getElementById('dotWolfx');
+  dot.className='dot warn';
+  try{
+    wolfxSocket = new WebSocket('wss://ws-api.wolfx.jp/jma_eew');
+  }catch(e){ retryWolfx(); return; }
+  wolfxSocket.onopen  = ()=>{ dot.className='dot ok'; wolfxRetry=0; log('Wolfx EEW 接続'); };
+  wolfxSocket.onclose = ()=>{ dot.className='dot bad'; log('Wolfx EEW 切断 再接続…','warn'); retryWolfx(); };
+  wolfxSocket.onerror = ()=>{ dot.className='dot bad'; };
+  wolfxSocket.onmessage = ev=>{
+    let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
+    if(d.type==='heartbeat') return;
+    if(d.type==='jma_eew') handleEEW(d);
+  };
+}
+function retryWolfx(){ wolfxRetry++; setTimeout(connectWolfx, Math.min(30000,1000*Math.pow(1.6,wolfxRetry))); }
+
+/* ============================================================
+   天気: Open-Meteo (APIキー不要)
+============================================================ */
+const PREF_WEATHER_POINTS = [
+  {pref:'北海道',name:'札幌',lat:43.0618,lon:141.3545},{pref:'青森県',name:'青森',lat:40.8244,lon:140.7400},
+  {pref:'岩手県',name:'盛岡',lat:39.7036,lon:141.1527},{pref:'宮城県',name:'仙台',lat:38.2682,lon:140.8694},
+  {pref:'秋田県',name:'秋田',lat:39.7186,lon:140.1024},{pref:'山形県',name:'山形',lat:38.2404,lon:140.3633},
+  {pref:'福島県',name:'福島',lat:37.7503,lon:140.4676},{pref:'茨城県',name:'水戸',lat:36.3418,lon:140.4468},
+  {pref:'栃木県',name:'宇都宮',lat:36.5551,lon:139.8828},{pref:'群馬県',name:'前橋',lat:36.3911,lon:139.0608},
+  {pref:'埼玉県',name:'さいたま',lat:35.8617,lon:139.6455},{pref:'千葉県',name:'千葉',lat:35.6074,lon:140.1065},
+  {pref:'東京都',name:'東京',lat:35.6895,lon:139.6917},{pref:'神奈川県',name:'横浜',lat:35.4437,lon:139.6380},
+  {pref:'新潟県',name:'新潟',lat:37.9026,lon:139.0232},{pref:'富山県',name:'富山',lat:36.6953,lon:137.2113},
+  {pref:'石川県',name:'金沢',lat:36.5947,lon:136.6256},{pref:'福井県',name:'福井',lat:36.0652,lon:136.2216},
+  {pref:'山梨県',name:'甲府',lat:35.6642,lon:138.5684},{pref:'長野県',name:'長野',lat:36.6513,lon:138.1810},
+  {pref:'岐阜県',name:'岐阜',lat:35.4233,lon:136.7607},{pref:'静岡県',name:'静岡',lat:34.9756,lon:138.3828},
+  {pref:'愛知県',name:'名古屋',lat:35.1815,lon:136.9066},{pref:'三重県',name:'津',lat:34.7303,lon:136.5086},
+  {pref:'滋賀県',name:'大津',lat:35.0045,lon:135.8686},{pref:'京都府',name:'京都',lat:35.0116,lon:135.7681},
+  {pref:'大阪府',name:'大阪',lat:34.6937,lon:135.5023},{pref:'兵庫県',name:'神戸',lat:34.6901,lon:135.1955},
+  {pref:'奈良県',name:'奈良',lat:34.6851,lon:135.8048},{pref:'和歌山県',name:'和歌山',lat:34.2305,lon:135.1708},
+  {pref:'鳥取県',name:'鳥取',lat:35.5011,lon:134.2351},{pref:'島根県',name:'松江',lat:35.4681,lon:133.0484},
+  {pref:'岡山県',name:'岡山',lat:34.6618,lon:133.9350},{pref:'広島県',name:'広島',lat:34.3853,lon:132.4553},
+  {pref:'山口県',name:'山口',lat:34.1785,lon:131.4737},{pref:'徳島県',name:'徳島',lat:34.0658,lon:134.5593},
+  {pref:'香川県',name:'高松',lat:34.3401,lon:134.0434},{pref:'愛媛県',name:'松山',lat:33.8392,lon:132.7657},
+  {pref:'高知県',name:'高知',lat:33.5597,lon:133.5311},{pref:'福岡県',name:'福岡',lat:33.5902,lon:130.4017},
+  {pref:'佐賀県',name:'佐賀',lat:33.2494,lon:130.2988},{pref:'長崎県',name:'長崎',lat:32.7503,lon:129.8777},
+  {pref:'熊本県',name:'熊本',lat:32.8031,lon:130.7079},{pref:'大分県',name:'大分',lat:33.2382,lon:131.6126},
+  {pref:'宮崎県',name:'宮崎',lat:31.9077,lon:131.4202},{pref:'鹿児島県',name:'鹿児島',lat:31.5966,lon:130.5571},
+  {pref:'沖縄県',name:'那覇',lat:26.2124,lon:127.6809},
+];
+const WMO = {0:'☀️快晴',1:'🌤晴れ',2:'⛅曇り',3:'☁️曇り',45:'🌫霧',48:'🌫霧',
+  51:'🌦小雨',53:'🌧雨',55:'🌧強雨',61:'🌧雨',63:'🌧雨',65:'⛈大雨',
+  71:'🌨小雪',73:'❄️雪',75:'❄️大雪',80:'🌦にわか雨',81:'🌧にわか雨',95:'⛈雷雨'
+};
+let dotWeatherOk = false;
+let selectedPrefWeather = localStorage.getItem('bousai_weather_pref') || '東京都';
+
+function initPrefWeatherSelector(){
+  filterPrefOptions();
+  const sel = document.getElementById('prefSelect');
+  if(sel) sel.value = selectedPrefWeather;
+}
+
+function filterPrefOptions(){
+  const sel = document.getElementById('prefSelect');
+  if(!sel) return;
+  const q = (document.getElementById('prefSearch')?.value || '').trim();
+  const items = PREF_WEATHER_POINTS.filter(p=>!q || p.pref.includes(q) || p.name.includes(q));
+  sel.innerHTML = items.map(p=>`<option value="${p.pref}">${p.pref} (${p.name})</option>`).join('');
+  if(items.some(p=>p.pref===selectedPrefWeather)) sel.value = selectedPrefWeather;
+}
+
+function selectPrefWeather(pref){
+  if(!pref) return;
+  selectedPrefWeather = pref;
+  localStorage.setItem('bousai_weather_pref', pref);
+  loadWeather();
+}
+
+async function loadWeather(){
+  const grid = document.getElementById('weatherGrid');
+  const c = PREF_WEATHER_POINTS.find(p=>p.pref===selectedPrefWeather) || PREF_WEATHER_POINTS[12];
+  grid.innerHTML = `<div class="wcard"><div class="w-city">${c.pref} (${c.name})</div><div class="w-desc" style="padding:16px 0; text-align:center;"><span class="spinner"></span></div></div>`;
+  const updated = new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
+  try{
+    const url=`https://api.open-meteo.com/v1/forecast?latitude=${c.lat}&longitude=${c.lon}&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m,apparent_temperature,precipitation&timezone=Asia/Tokyo`;
+    const r=await fetch(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    const cur=d.current;
+    const tempColor = cur.temperature_2m >= 35?'#ff6b6b':cur.temperature_2m>=25?'#ffa94d':cur.temperature_2m<=5?'#74c0fc':'';
+    grid.innerHTML = `<div class="wcard">
+      <div class="w-city"><span>${c.pref} (${c.name})</span><span style="font-size:11px;font-weight:400;color:var(--sub);">${updated}更新</span></div>
+      <div class="w-temp" style="${tempColor?'color:'+tempColor:''}">${Math.round(cur.temperature_2m)}<span class="w-unit">℃</span></div>
+      <div class="w-desc">${WMO[cur.weather_code]||'--'}</div>
+      <div class="w-extra">
+        <span>💨 ${Math.round(cur.wind_speed_10m)}km/h</span>
+        <span>💧 ${cur.relative_humidity_2m}%</span>
+        <span>🌧 ${cur.precipitation ?? 0}mm</span>
+        <span>🌡 体感 ${Math.round(cur.apparent_temperature)}℃</span>
+      </div>
+    </div>`;
+    if(!dotWeatherOk){ document.getElementById('dotWeather').className='dot ok'; dotWeatherOk=true; }
+  }catch(e){
+    grid.innerHTML=`<div class="wcard"><div class="w-city">${c.pref}</div><div class="w-desc" style="color:var(--sub);padding:8px 0;">取得失敗</div></div>`;
+    log('天気取得失敗: '+e.message,'err');
+  }
+}
+
+/* ============================================================
+   台風情報 (気象庁)
+============================================================ */
+async function loadTyphoon(){
+  const el = document.getElementById('typhoonInfo');
+  el.innerHTML = '<span class="spinner"></span> 取得中…';
+  try{
+    const url = 'https://www.jma.go.jp/bosai/typhoon/data/targetTc.json';
+    const r = await fetchWithProxy(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d = await r.json();
+    if(!d||d.length===0){ el.textContent='現在、台風の情報はありません。'; return; }
+    el.innerHTML = d.map(t=>`
+      <div class="typhoon-card card">
+        <div class="card-head">${escapeHTML(formatTyphoonName(t))}</div>
+        <div class="card-body" style="font-size:12px;">
+          <div>階級: ${escapeHTML(formatTyphoonCategory(t.category))}</div>
+          <div>発表: ${formatJmaDateTime(t.issue)}</div>
+        </div>
+      </div>`).join('');
+  }catch(e){
+    el.innerHTML='<span style="color:var(--sub);font-size:12px;">台風情報の取得に失敗しました。<a href="https://www.jma.go.jp/jp/typh/" target="_blank">気象庁</a>をご確認ください。</span>';
+    log('台風情報取得失敗: '+e.message,'warn');
+  }
+}
+
+function formatTyphoonName(t){
+  if(t.typhoonNumber && /^\d{4}$/.test(t.typhoonNumber)){
+    return `台風第${parseInt(t.typhoonNumber.slice(2),10)}号`;
+  }
+  if(t.typhoonNumber) return `熱帯低気圧 ${t.typhoonNumber}`;
+  return t.tropicalCyclone || '台風';
+}
+function formatTyphoonCategory(category){
+  const labels = {TD:'熱帯低気圧',TS:'台風',STS:'強い台風',TY:'非常に強い台風',LOW:'低気圧'};
+  return labels[category] || category || '--';
+}
+function formatJmaDateTime(value){
+  if(!value) return '--';
+  const d = new Date(value);
+  if(Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString('ja-JP', {timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+
+/* ============================================================
+   火山情報 (気象庁)
+============================================================ */
+const VOLCANOES_DEFAULT = [
+  {name:'桜島',level:3},{name:'阿蘇山',level:2},{name:'霧島山(新燃岳)',level:2},
+  {name:'諏訪之瀬島',level:3},{name:'口永良部島',level:2},{name:'薩摩硫黄島',level:2},
+  {name:'三宅島',level:2},{name:'伊豆大島',level:1},{name:'吾妻山',level:2},
+  {name:'草津白根山',level:2},{name:'浅間山',level:2},{name:'那須岳',level:1},
+];
+
+async function loadVolcano(){
+  const el = document.getElementById('volcanoList');
+  // まずデフォルト表示
+  el.innerHTML = VOLCANOES_DEFAULT.map(v=>`
+    <div class="vol-item">
+      <span>${v.name}</span>
+      <span class="lv lv${v.level}">Lv.${v.level}</span>
+    </div>`).join('');
+  try{
+    const url = 'https://www.jma.go.jp/bosai/volc/data/latest_list.json';
+    const r = await fetchWithProxy(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    const rows = (data||[]).map(v=>({
+      name: v.name||v.volcano_name||'不明',
+      level: v.level||v.warning_level||1
+    })).filter(v=>v.level>=1);
+    if(rows.length > 0){
+      el.innerHTML = rows.map(v=>`
+        <div class="vol-item">
+          <span>${escapeHTML(v.name)}</span>
+          <span class="lv lv${Math.min(v.level,5)}">Lv.${v.level}</span>
+        </div>`).join('');
+      log(`火山情報更新: ${rows.length}件`);
+    }
+  }catch(e){
+    log('火山情報API取得失敗: '+e.message,'warn');
+  }
+}
+
+/* ============================================================
+   停電情報
+============================================================ */
+const POWER_AREAS = [
+  {name:'北海道電力NW', url:'https://teiden-info.hepco.co.jp/'},
+  {name:'東北電力NW', url:'https://nw.tohoku-epco.co.jp/teideninfo/'},
+  {name:'東京電力PG', url:'https://teideninfo.tepco.co.jp/'},
+  {name:'中部電力PG', url:'https://teideninfo.chuden.co.jp/'},
+  {name:'北陸電力送配電', url:'https://www.rikuden.co.jp/nw/teideninfo/'},
+  {name:'関西電力送配電', url:'https://teideninfo.kansai-td.co.jp/'},
+  {name:'中国電力NW', url:'https://www.energia.co.jp/nw/service/custom/teiden/'},
+  {name:'四国電力送配電', url:'https://www.yonden.co.jp/nw/emergency/'},
+  {name:'九州電力送配電', url:'https://www.kyuden.co.jp/td_service_outage_index.html'},
+  {name:'沖縄電力', url:'https://www.okiden.co.jp/service/power-outage/'},
+];
+
+function loadOutageInfo(){
+  const el = document.getElementById('outageInfo');
+  if(!el) return;
+  el.innerHTML = POWER_AREAS.map(a=>`
+    <div class="outage-item">
+      <div><strong>${escapeHTML(a.name)}</strong></div>
+      <div class="meta"><a href="${a.url}" target="_blank" rel="noopener">停電情報を確認する →</a></div>
+    </div>`).join('');
+}
+
+/* ============================================================
+   グローバルチャット (WebSocket)
+============================================================ */
+let chatSocket = null, chatRetry = 0;
+const CHAT_WS = 'wss://socketsbay.com/wss/v2/1/demo/';
+
+function connectChat(){
+  document.getElementById('chatStatus').textContent = '接続中…';
+  try{
+    chatSocket = new WebSocket(CHAT_WS);
+  }catch(e){ retryChatSocket(); return; }
+  chatSocket.onopen  = ()=>{ document.getElementById('chatStatus').textContent = '接続中'; chatRetry=0; };
+  chatSocket.onclose = ()=>{ document.getElementById('chatStatus').textContent = '再接続中…'; retryChatSocket(); };
+  chatSocket.onerror = ()=>{ document.getElementById('chatStatus').textContent = 'エラー'; };
+  chatSocket.onmessage = ev=>{
+    let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
+    if(d.type!=='chat') return;
+    addChatMsg(d.name||'匿名', d.text||'', false, false);
+    const active = document.querySelector('.tab.active');
+    if(!active||active.dataset.tab!=='tab-chat'){
+      const b=document.getElementById('badge-chat');
+      b.textContent=parseInt(b.textContent||'0')+1;
+      b.classList.add('show');
+    }
+  };
+}
+function retryChatSocket(){ chatRetry++; setTimeout(connectChat, Math.min(30000,2000*Math.pow(1.5,chatRetry))); }
+
+function sendChat(){
+  const input = document.getElementById('chatInput');
+  const name  = document.getElementById('chatName').value.trim()||'匿名';
+  const text  = input.value.trim();
+  if(!text) return;
+  if(chatSocket&&chatSocket.readyState===1){
+    chatSocket.send(JSON.stringify({type:'chat',name,text}));
+    addChatMsg(name, text, true, false);
+  } else {
+    addChatMsg('(オフライン)', text, true, false);
+  }
+  // Discord Webhook にミラー送信
+  if(cfg.webhookChat && cfg.webhookUrl){
+    sendDiscord(`💬 **[チャット] ${name}**: ${text}`);
+  }
+  input.value='';
+}
+
+function addChatMsg(sender, text, isMine, isDiscord=false){
+  const box = document.getElementById('chatMessages');
+  const d = document.createElement('div');
+  d.className = 'chat-msg '+(isMine?'mine':isDiscord?'discord-mirror':'other');
+  const prefix = isDiscord ? '🟦 Discord | ' : '';
+  d.innerHTML = `<div class="sender">${escapeHTML(prefix+sender)}</div>${escapeHTML(text)}`;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+  while(box.children.length>200) box.removeChild(box.firstChild);
+}
+
+function updateChatDiscordStatus(){
+  const el = document.getElementById('discordMirrorStatus');
+  if(!el) return;
+  if(cfg.webhookChat && cfg.webhookUrl){
+    el.textContent = '🟦 Discord転送ON';
+  } else {
+    el.textContent = '';
+  }
+}
+
+/* ============================================================
+   Discord Webhook
+============================================================ */
+async function sendDiscord(content){
+  const url = cfg.webhookUrl;
+  if(!url||!url.startsWith('https://discord.com/api/webhooks/')) return;
+  try{
+    await fetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content, username:'統合防災モニター 🇯🇵'})
+    });
+    log('Discord Webhook送信完了');
+  }catch(e){ log('Discord Webhook失敗: '+e.message,'err'); }
+}
+
+async function testWebhook(){
+  await sendDiscord('🧪 テスト送信: 統合防災モニターのDiscord連携が正常に動作しています。');
+  showToast('テスト送信しました','Discordを確認してください','info');
+}
+
+/* ============================================================
+   凡例描画
+============================================================ */
+(function renderLegend(){
+  const el = document.getElementById('mapLegend');
+  if(!el) return;
+  SCALE_ORDER.forEach(k=>{
+    const s = document.createElement('div');
+    s.className = 'legend-item';
+    s.innerHTML = `<span class="legend-dot" style="background:${hex(JDQ[k])}"></span>${SCALE_LABEL[k]}`;
+    el.appendChild(s);
+  });
+})();
+
+/* ============================================================
+   時計
+============================================================ */
+setInterval(()=>{
+  const t = new Date().toLocaleTimeString('ja-JP');
+  const footerTime = document.getElementById('footerTime');
+  if(footerTime) footerTime.textContent = t;
+  document.getElementById('headerClock').textContent = t;
+}, 1000);
+
+/* ============================================================
+   XSS対策
+============================================================ */
+function escapeHTML(s){
+  if(s==null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ============================================================
+   初期化
+============================================================ */
+loadConfig();
+applyConfigToUI();
+soundOn = cfg.eewSound||cfg.eqSound;
+voiceOn = cfg.tts;
+updateSoundBtn();
+updateChatDiscordStatus();
+
+// 保存済み履歴の読み込み
+loadPersistedHistory();
+
+// マップ
+initMap();
+
+// データ接続
+loadStations();
+connectP2P();
+connectWolfx();
+initPrefWeatherSelector();
+loadWeather();
+loadTyphoon();
+loadVolcano();
+loadOutageInfo();
+connectChat();
+locateMe();
+loadWarnings();
+
+// 定期更新
+setInterval(loadWeather, 15*60*1000);
+setInterval(loadTyphoon, 10*60*1000);
+setInterval(fetchRadarTimes, 5*60*1000);
+setInterval(loadWarnings, 10*60*1000); // 10分毎に警報更新
+
+log(`統合防災モニター v${VERSION} 起動 (完全ローカル動作モード)`);
+</script>
+</body>
+</html>
