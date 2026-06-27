@@ -8,6 +8,7 @@
 <title>🇯🇵 統合防災モニター</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.14.1/mqtt.min.js"></script>
 <style>
 /* ============================================================
    CSS変数 / リセット
@@ -731,7 +732,8 @@ button{cursor:pointer; font-family:var(--font-ui);}
           <div class="map-ctrl-row">
             <button class="mctrl-btn active" id="btnOverlayStation" onclick="toggleOverlay('station',this)" title="観測点">観測点</button>
             <button class="mctrl-btn active" id="btnOverlayRadar" onclick="toggleOverlay('radar',this)" title="雨雲レーダー">雨雲</button>
-            <button class="mctrl-btn" id="btnOverlayKyoshin" onclick="toggleOverlay('kyoshin',this)" title="強震モニタ">強震</button>
+            <button class="mctrl-btn" id="btnOverlayThunder" onclick="toggleOverlay('thunder',this)" title="雷ナウキャスト">⚡雷</button>
+            <button class="mctrl-btn active" id="btnOverlayKyoshin" onclick="toggleOverlay('kyoshin',this)" title="揺れている観測点を強調表示">強震強調</button>
             <button class="mctrl-btn" id="btnOverlayWave" onclick="toggleOverlay('wave',this)" title="P/S波表示">P/S波</button>
           </div>
         </div>
@@ -761,6 +763,9 @@ button{cursor:pointer; font-family:var(--font-ui);}
         <div class="radar-panel" id="radarPanel">
           <div class="radar-time" id="radarTime">雨雲レーダー: --</div>
           <input type="range" id="radarSlider" min="0" max="10" value="10" style="width:160px; accent-color:var(--accent);" oninput="updateRadarTime(this.value)">
+        </div>
+        <div class="radar-panel" id="thunderPanel" style="display:none; margin-top:6px;">
+          <div class="radar-time" id="thunderTime">⚡ 雷ナウキャスト: --</div>
         </div>
       </div>
     </div>
@@ -952,6 +957,10 @@ button{cursor:pointer; font-family:var(--font-ui);}
           <button class="radar-play-btn" id="radarPlayBtn" onclick="toggleRadarPlay()">▶ 再生</button>
           <input type="range" id="radarTabSlider" min="0" max="10" value="10" oninput="updateRadarTabTime(this.value)">
         </div>
+        <div style="display:flex; justify-content:center; gap:6px; margin-top:8px;">
+          <button class="mctrl-btn" id="btnThunderTab" onclick="toggleThunderTab(this)" title="雷ナウキャストを重ねて表示">⚡雷ナウキャストを表示</button>
+        </div>
+        <div class="radar-time-display" id="thunderTabTime" style="display:none; margin-top:4px; font-size:11px;">⚡ --</div>
       </div>
     </div>
   </div>
@@ -993,7 +1002,7 @@ button{cursor:pointer; font-family:var(--font-ui);}
   <div class="tabpanel" id="tab-chat">
     <div class="chat-name-bar">
       <span>名前:</span>
-      <input type="text" id="chatName" placeholder="匿名" maxlength="20">
+      <input type="text" id="chatName" placeholder="匿名" maxlength="20" title="名前は自動的に保存され、次回も使用されます" oninput="saveChatName()">
       <span class="chat-discord-status" id="discordMirrorStatus"></span>
       <span style="color:var(--sub); margin-left:8px; font-size:11px;" id="chatStatus">未接続</span>
     </div>
@@ -1448,9 +1457,10 @@ function initMap(){
   map.on('load', ()=>{
     addStationLayer();
     addRadarLayer();
+    addThunderLayer();
     addEpicenterLayer();
     addShakeAreaLayer();
-    if(cfg.kyoshin) addKyoshinLayer();
+    if(cfg.kyoshin) addStationHaloLayer(map);
     log('MapLibre GL マップ初期化完了');
   });
   map.on('move', ()=>{ if(waveOrigin) animateWavefront(); });
@@ -1460,8 +1470,8 @@ function changeMapStyle(style){
   cfg.mapStyle = style;
   map.setStyle(MAP_STYLES[style]||MAP_STYLES.dark);
   map.once('styledata', ()=>{
-    addStationLayer(); addRadarLayer(); addEpicenterLayer(); addShakeAreaLayer();
-    if(cfg.kyoshin) addKyoshinLayer();
+    addStationLayer(); addRadarLayer(); addThunderLayer(); addEpicenterLayer(); addShakeAreaLayer();
+    if(cfg.kyoshin) addStationHaloLayer(map);
   });
   saveSetting();
 }
@@ -1501,11 +1511,11 @@ async function loadStations(){
   }
 }
 
-function addStationLayer(){
-  if(!map.isStyleLoaded()) return;
-  if(map.getSource('stations')) return;
-  map.addSource('stations',{type:'geojson',data:buildStationGeoJSON()});
-  map.addLayer({
+function addStationLayer(targetMap = map){
+  if(!targetMap || !targetMap.isStyleLoaded()) return;
+  if(targetMap.getSource('stations')) return;
+  targetMap.addSource('stations',{type:'geojson',data:buildStationGeoJSON()});
+  targetMap.addLayer({
     id:'stations-circle', type:'circle', source:'stations',
     paint:{
       'circle-radius':['interpolate',['linear'],['zoom'],3,1.5,6,2.5,10,4],
@@ -1515,14 +1525,35 @@ function addStationLayer(){
       'circle-stroke-color':'rgba(0,0,0,.3)'
     }
   });
-  map.on('click','stations-circle',(e)=>{
+  targetMap.on('click','stations-circle',(e)=>{
     const f = e.features[0];
     if(!f) return;
     new maplibregl.Popup({closeButton:true})
       .setLngLat(e.lngLat)
-      .setHTML(`<b>${f.properties.name}</b><br>震度: ${f.properties.scaleLabel}<br>${f.properties.pref||''}`)
-      .addTo(map);
+      .setHTML(`<b>${escapeHTML(f.properties.name)}</b><br>震度: ${escapeHTML(f.properties.scaleLabel)}<br>${escapeHTML(f.properties.pref||'')}`)
+      .addTo(targetMap);
   });
+}
+
+/* 強震強調レイヤー: 揺れを検知した観測点だけ大きな丸で強調表示する（NIED画像のピクセル解析等は行わず、
+   P2P地震情報・気象庁の公式な震度観測データのみを使用） */
+function addStationHaloLayer(targetMap){
+  if(!targetMap || !targetMap.isStyleLoaded()) return;
+  if(!targetMap.getSource('stations')) return;
+  if(targetMap.getLayer('stations-halo')){
+    targetMap.setLayoutProperty('stations-halo','visibility','visible');
+    return;
+  }
+  targetMap.addLayer({
+    id:'stations-halo', type:'circle', source:'stations',
+    filter:['>', ['get','scaleNum'], 0],
+    paint:{
+      'circle-radius':['interpolate',['linear'],['zoom'],3,5,6,10,10,18],
+      'circle-color':['get','color'],
+      'circle-opacity':0.28,
+      'circle-stroke-width':0
+    }
+  }, 'stations-circle');
 }
 
 function buildStationGeoJSON(){
@@ -1545,8 +1576,9 @@ function buildStationGeoJSON(){
 }
 
 function updateStationLayer(){
-  if(!map || !map.getSource('stations')) return;
-  map.getSource('stations').setData(buildStationGeoJSON());
+  [map, kyoshinMap].forEach(m=>{
+    if(m && m.getSource && m.getSource('stations')) m.getSource('stations').setData(buildStationGeoJSON());
+  });
 }
 
 function stationMatchesForPoint(pt){
@@ -1708,6 +1740,74 @@ function updateRadarTime(idx){
 }
 
 /* ============================================================
+   MapLibreレイヤー: 雷ナウキャスト（雷活動度）
+============================================================ */
+let thunderTimes = [];
+let thunderLastFetch = 0;
+
+function addThunderLayer(){
+  if(!map || !map.isStyleLoaded()) return;
+  if(map.getSource('thunder')) return;
+  map.addSource('thunder',{
+    type:'raster',
+    tiles:['https://www.jma.go.jp/bosai/jmatile/data/nowc/none/none/surf/thns/{z}/{x}/{y}.png'],
+    tileSize:256,
+    attribution:'気象庁 雷ナウキャスト'
+  });
+  map.addLayer({id:'thunder-layer', type:'raster', source:'thunder', paint:{'raster-opacity':0.75}});
+  map.setLayoutProperty('thunder-layer','visibility', overlayState.thunder ? 'visible' : 'none');
+}
+
+async function fetchThunderTimes(){
+  try{
+    const url = 'https://www.jma.go.jp/bosai/jmatile/data/nowc/targetTimes_N3.json';
+    const r = await fetchWithProxy(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    thunderTimes = (data||[])
+      .filter(d=>d.basetime && d.validtime && Array.isArray(d.elements) && d.elements.includes('thns'))
+      .map(d=>({base:d.basetime, valid:d.validtime}));
+    thunderLastFetch = Date.now();
+    updateThunderLayer();
+    updateThunderTabLayer();
+    log(`雷ナウキャスト時刻取得: ${thunderTimes.length}件`);
+  }catch(e){ log('雷ナウキャスト時刻取得失敗: '+e.message,'warn'); }
+}
+
+function latestThunderTime(){
+  return thunderTimes.length ? thunderTimes[thunderTimes.length-1] : null;
+}
+
+function thunderTimeLabel(){
+  const rt = latestThunderTime();
+  if(!rt) return '⚡ 雷ナウキャスト: データなし';
+  const t = rt.valid;
+  return `⚡ 雷ナウキャスト: ${t.slice(0,4)}/${t.slice(4,6)}/${t.slice(6,8)} ${t.slice(8,10)}:${t.slice(10,12)}`;
+}
+
+function updateThunderLayer(){
+  const rt = latestThunderTime();
+  const panel = document.getElementById('thunderPanel');
+  const timeEl = document.getElementById('thunderTime');
+  if(timeEl) timeEl.textContent = thunderTimeLabel();
+  if(panel) panel.style.display = overlayState.thunder ? '' : 'none';
+  if(!map || !map.isStyleLoaded() || !rt) return;
+  const wasVisible = overlayState.thunder;
+  try{
+    if(map.getLayer('thunder-layer')) map.removeLayer('thunder-layer');
+    if(map.getSource('thunder')) map.removeSource('thunder');
+  }catch(e){}
+  map.addSource('thunder',{
+    type:'raster',
+    tiles:[`${RADAR_BASE}/${rt.base}/none/${rt.valid}/surf/thns/{z}/{x}/{y}.png`],
+    tileSize:256,
+    attribution:'気象庁 雷ナウキャスト'
+  });
+  map.addLayer({id:'thunder-layer', type:'raster', source:'thunder', paint:{'raster-opacity':0.75}});
+  if(!wasVisible) map.setLayoutProperty('thunder-layer','visibility','none');
+}
+
+/* ============================================================
    雨雲レーダータブ専用マップ
 ============================================================ */
 let radarMap = null;
@@ -1764,6 +1864,33 @@ function updateRadarTabMap(idx){
   radarMap.addLayer({id:'radar-tab-layer',type:'raster',source:'radar-tab',paint:{'raster-opacity':0.7}});
 }
 
+let thunderTabOn = false;
+function toggleThunderTab(btn){
+  thunderTabOn = !thunderTabOn;
+  btn.classList.toggle('active', thunderTabOn);
+  btn.textContent = thunderTabOn ? '⚡雷ナウキャストを表示中' : '⚡雷ナウキャストを表示';
+  const label = document.getElementById('thunderTabTime');
+  if(label) label.style.display = thunderTabOn ? '' : 'none';
+  if(thunderTabOn) updateThunderTabLayer();
+  else if(radarMap && radarMap.getLayer('thunder-tab-layer'))
+    radarMap.setLayoutProperty('thunder-tab-layer','visibility','none');
+}
+
+function updateThunderTabLayer(){
+  const label = document.getElementById('thunderTabTime');
+  if(label) label.textContent = thunderTimeLabel();
+  if(!thunderTabOn || !radarMap || !radarMap.isStyleLoaded()) return;
+  const rt = latestThunderTime();
+  if(!rt) return;
+  try{
+    if(radarMap.getLayer('thunder-tab-layer')) radarMap.removeLayer('thunder-tab-layer');
+    if(radarMap.getSource('thunder-tab')) radarMap.removeSource('thunder-tab');
+  }catch(e){}
+  const tileUrl = `${RADAR_BASE}/${rt.base}/none/${rt.valid}/surf/thns/{z}/{x}/{y}.png`;
+  radarMap.addSource('thunder-tab',{type:'raster',tiles:[tileUrl],tileSize:256,attribution:'気象庁 雷ナウキャスト'});
+  radarMap.addLayer({id:'thunder-tab-layer',type:'raster',source:'thunder-tab',paint:{'raster-opacity':0.8}});
+}
+
 function toggleRadarPlay(){
   radarPlaying = !radarPlaying;
   document.getElementById('radarPlayBtn').textContent = radarPlaying ? '⏸ 停止' : '▶ 再生';
@@ -1783,43 +1910,16 @@ function playRadarAnimation(){
 }
 
 /* ============================================================
-   強震モニタタブ専用マップ
+   観測点モニタ専用マップ（強震モニタタブ）
+   ※ NIED「強震モニタ」の画像からピクセル単位で値を抽出する方式は
+     防災科研が明示的に「意図しない利用」として自粛を求めているため採用しない。
+     代わりに、P2P地震情報・気象庁の公式な震度観測データのみを用いて、
+     観測点（小さな丸ポチ）を実際の震度で色付けする。
 ============================================================ */
 let kyoshinMap = null;
 let kyoshinMapReady = false;
-let kyoshinUpdateTimer = null;
-let kyoshinLastUrl = '';
-let kyoshinRetryOffset = 8;
 
-const KYOSHIN_IMAGE_COORDS = [
-  [128.0, 46.5],
-  [148.0, 46.5],
-  [148.0, 29.0],
-  [128.0, 29.0],
-];
-
-function kyoshinTimeStamp(offsetSec = 7){
-  const d = new Date(Date.now() - offsetSec * 1000);
-  d.setMilliseconds(0);
-  d.setSeconds(Math.floor(d.getSeconds() / 5) * 5);
-  const pad = n => String(n).padStart(2, '0');
-  const y = d.getFullYear();
-  const m = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  const hh = pad(d.getHours());
-  const mm = pad(d.getMinutes());
-  const ss = pad(d.getSeconds());
-  return `${y}${m}${day}${hh}${mm}${ss}`;
-}
-
-function kyoshinImageUrl(ts = kyoshinTimeStamp()){
-  const day = ts.slice(0, 8);
-  return `http://www.kmoni.bosai.go.jp/data/map_img/RealTimeImg/jma_s/${day}/${ts}.jma_s.gif?_=${Date.now()}`;
-}
-
-function updateKyoshinStatus(ok, message=''){
-  const dot = document.getElementById('dotStation');
-  if(dot) dot.className = ok ? 'dot ok' : 'dot bad';
+function updateKyoshinStatus(message=''){
   const time = document.getElementById('kyoshinTime');
   if(time && message) time.textContent = message;
 }
@@ -1837,91 +1937,18 @@ function initKyoshinMap(){
   kyoshinMap.addControl(new maplibregl.NavigationControl({showCompass:false}), 'bottom-right');
   kyoshinMap.addControl(new maplibregl.AttributionControl({compact:true}), 'bottom-right');
   kyoshinMap.on('load', ()=>{
-    addKyoshinToMap(kyoshinMap, 'kyoshin-tab');
-    startKyoshinUpdate();
+    addStationLayer(kyoshinMap);
+    addStationHaloLayer(kyoshinMap);
+    renderLegend('kyoshinLegend');
+    updateKyoshinStatus(`観測点モニタ 表示中（${stations.length}点）`);
   });
-  log('強震モニタマップ初期化');
-}
-
-function addKyoshinToMap(targetMap, sourceId='kyoshin'){
-  if(!targetMap || targetMap.getSource(sourceId)) return;
-  const cache = Date.now();
-  targetMap.addSource(sourceId,{
-    type:'raster',
-    tiles:[`https://weather.tsukumijima.net/api/jisin/map?z={z}&x={x}&y={y}&_=${cache}`],
-    tileSize:256,
-    attribution:'NIED強震モニタ'
-  });
-  targetMap.addLayer({
-    id:sourceId+'-layer',
-    type:'raster',
-    source:sourceId,
-    paint:{
-      'raster-opacity':0.86,
-      'raster-resampling':'nearest'
-    }
-  });
-  updateKyoshinStatus(true, `強震モニタ ${new Date().toLocaleTimeString('ja-JP')} 表示中`);
-}
-
-function updateKyoshinImage(){
-  const cache = Date.now();
-  [
-    {m: map, id:'kyoshin'},
-    {m: kyoshinMap, id:'kyoshin-tab'}
-  ].forEach(({m,id})=>{
-    if(!m || !m.isStyleLoaded()) return;
-    try{
-      const visible = m.getLayer(id+'-layer')
-        ? m.getLayoutProperty(id+'-layer','visibility')
-        : undefined;
-      if(m.getLayer(id+'-layer')) m.removeLayer(id+'-layer');
-      if(m.getSource(id)) m.removeSource(id);
-      m.addSource(id,{
-        type:'raster',
-        tiles:[`https://weather.tsukumijima.net/api/jisin/map?z={z}&x={x}&y={y}&_=${cache}`],
-        tileSize:256,
-        attribution:'NIED強震モニタ'
-      });
-      m.addLayer({
-        id:id+'-layer',
-        type:'raster',
-        source:id,
-        paint:{'raster-opacity':0.86,'raster-resampling':'nearest'}
-      });
-      if(visible === 'none') m.setLayoutProperty(id+'-layer','visibility','none');
-    }catch(e){
-      updateKyoshinStatus(false, '強震モニタ更新失敗');
-      log('強震モニタ更新失敗: '+e.message, 'warn');
-    }
-  });
-  kyoshinLastUrl = String(cache);
-}
-
-function startKyoshinUpdate(){
-  clearInterval(kyoshinUpdateTimer);
-  const refresh = ()=>{
-    const t = new Date().toLocaleTimeString('ja-JP');
-    updateKyoshinImage();
-    updateKyoshinStatus(true, `強震モニタ ${t} 更新中`);
-  };
-  refresh();
-  kyoshinUpdateTimer = setInterval(refresh, 10000);
-}
-
-/* ============================================================
-   MapLibreレイヤー: 強震モニタ (メインマップ)
-============================================================ */
-function addKyoshinLayer(){
-  if(!map) return;
-  addKyoshinToMap(map, 'kyoshin');
-  startKyoshinUpdate();
+  log('観測点モニタマップ初期化');
 }
 
 /* ============================================================
    オーバーレイ切り替え
 ============================================================ */
-const overlayState = {station:true, radar:true, kyoshin:false, wave:true};
+const overlayState = {station:true, radar:true, thunder:false, kyoshin:true, wave:true};
 function toggleOverlay(name, btn){
   overlayState[name] = !overlayState[name];
   btn.classList.toggle('active', overlayState[name]);
@@ -1929,18 +1956,24 @@ function toggleOverlay(name, btn){
     case 'station':
       if(map.getLayer('stations-circle'))
         map.setLayoutProperty('stations-circle','visibility',overlayState.station?'visible':'none');
+      if(map.getLayer('stations-halo'))
+        map.setLayoutProperty('stations-halo','visibility',(overlayState.station&&overlayState.kyoshin)?'visible':'none');
       break;
     case 'radar':
       if(map.getLayer('radar-layer'))
         map.setLayoutProperty('radar-layer','visibility',overlayState.radar?'visible':'none');
       document.getElementById('radarPanel').style.display = overlayState.radar?'':'none';
       break;
+    case 'thunder':
+      if(map.getLayer('thunder-layer'))
+        map.setLayoutProperty('thunder-layer','visibility',overlayState.thunder?'visible':'none');
+      else if(overlayState.thunder && map.isStyleLoaded()) addThunderLayer();
+      updateThunderLayer();
+      break;
     case 'kyoshin':
-      const kImg = document.getElementById('kyoshin-img');
-      if(kImg) kImg.style.display = overlayState.kyoshin ? '' : 'none';
-      if(map.getLayer('kyoshin-layer'))
-        map.setLayoutProperty('kyoshin-layer','visibility',overlayState.kyoshin?'visible':'none');
-      else if(overlayState.kyoshin && map.isStyleLoaded()) addKyoshinLayer();
+      if(map.getLayer('stations-halo'))
+        map.setLayoutProperty('stations-halo','visibility',overlayState.kyoshin?'visible':'none');
+      else if(overlayState.kyoshin && map.isStyleLoaded()) addStationHaloLayer(map);
       break;
     case 'wave':
       if(!overlayState.wave) clearWavefront();
@@ -2924,43 +2957,98 @@ function loadOutageInfo(){
 }
 
 /* ============================================================
-   グローバルチャット (WebSocket)
+   グローバルチャット (MQTT over WebSocket)
+   ※ 以前は socketsbay.com の「demo」共有チャンネルを使用していたが、
+     世界中の動作確認用トラフィックと混在し不安定だったため、
+     公開MQTTブローカー(EMQX)+ 専用トピックに変更。
 ============================================================ */
-let chatSocket = null, chatRetry = 0;
-const CHAT_WS = 'wss://socketsbay.com/wss/v2/1/demo/';
+let chatClient = null;
+const CHAT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+const CHAT_TOPIC = 'bousai-monitor-jp/v1/global-chat';
+const recentSentIds = [];
+
+function getChatClientId(){
+  let id = localStorage.getItem('bousai_chat_uid');
+  if(!id){
+    id = 'bousai-' + Math.random().toString(16).slice(2, 10) + Date.now().toString(16);
+    localStorage.setItem('bousai_chat_uid', id);
+  }
+  return id;
+}
+
+function loadChatName(){
+  const saved = localStorage.getItem('bousai_chat_name');
+  if(saved){
+    const el = document.getElementById('chatName');
+    if(el) el.value = saved;
+  }
+}
+function saveChatName(){
+  const el = document.getElementById('chatName');
+  if(!el) return;
+  localStorage.setItem('bousai_chat_name', el.value.trim().slice(0,20));
+}
+
+function setChatStatus(text){
+  const el = document.getElementById('chatStatus');
+  if(el) el.textContent = text;
+}
 
 function connectChat(){
-  document.getElementById('chatStatus').textContent = '接続中…';
+  if(typeof mqtt === 'undefined'){
+    setChatStatus('読込失敗'); log('チャット: MQTTライブラリの読込に失敗','err');
+    return;
+  }
+  setChatStatus('接続中…');
   try{
-    chatSocket = new WebSocket(CHAT_WS);
-  }catch(e){ retryChatSocket(); return; }
-  chatSocket.onopen  = ()=>{ document.getElementById('chatStatus').textContent = '接続中'; chatRetry=0; };
-  chatSocket.onclose = ()=>{ document.getElementById('chatStatus').textContent = '再接続中…'; retryChatSocket(); };
-  chatSocket.onerror = ()=>{ document.getElementById('chatStatus').textContent = 'エラー'; };
-  chatSocket.onmessage = ev=>{
-    let d; try{ d=JSON.parse(ev.data); }catch(e){ return; }
-    if(d.type!=='chat') return;
-    addChatMsg(d.name||'匿名', d.text||'', false, false);
+    chatClient = mqtt.connect(CHAT_BROKER_URL, {
+      clientId: getChatClientId(),
+      clean: true,
+      reconnectPeriod: 4000,
+      connectTimeout: 10000,
+      keepalive: 30,
+    });
+  }catch(e){ setChatStatus('エラー'); log('チャット接続失敗: '+e.message,'err'); return; }
+
+  chatClient.on('connect', ()=>{
+    setChatStatus('接続中');
+    chatClient.subscribe(CHAT_TOPIC, {qos:0}, (err)=>{
+      if(err) log('チャット購読失敗: '+err.message,'warn');
+    });
+  });
+  chatClient.on('reconnect', ()=> setChatStatus('再接続中…'));
+  chatClient.on('close',     ()=> setChatStatus('切断'));
+  chatClient.on('offline',   ()=> setChatStatus('オフライン'));
+  chatClient.on('error',     (e)=> { setChatStatus('エラー'); log('チャットエラー: '+(e&&e.message||e),'warn'); });
+
+  chatClient.on('message', (topic, payload)=>{
+    let d; try{ d = JSON.parse(payload.toString()); }catch(e){ return; }
+    if(!d || typeof d.text !== 'string') return;
+    // 自分が送信したメッセージのechoは無視（既に表示済み）
+    if(d.id && recentSentIds.includes(d.id)) return;
+    addChatMsg(d.name || '匿名', d.text, false, false);
     const active = document.querySelector('.tab.active');
-    if(!active||active.dataset.tab!=='tab-chat'){
-      const b=document.getElementById('badge-chat');
-      b.textContent=parseInt(b.textContent||'0')+1;
-      b.classList.add('show');
+    if(!active || active.dataset.tab !== 'tab-chat'){
+      const b = document.getElementById('badge-chat');
+      if(b){ b.textContent = parseInt(b.textContent||'0') + 1; b.classList.add('show'); }
     }
-  };
+  });
 }
-function retryChatSocket(){ chatRetry++; setTimeout(connectChat, Math.min(30000,2000*Math.pow(1.5,chatRetry))); }
 
 function sendChat(){
   const input = document.getElementById('chatInput');
-  const name  = document.getElementById('chatName').value.trim()||'匿名';
+  const name  = document.getElementById('chatName').value.trim() || '匿名';
   const text  = input.value.trim();
   if(!text) return;
-  if(chatSocket&&chatSocket.readyState===1){
-    chatSocket.send(JSON.stringify({type:'chat',name,text}));
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+
+  if(chatClient && chatClient.connected){
+    recentSentIds.push(id);
+    if(recentSentIds.length > 50) recentSentIds.shift();
+    chatClient.publish(CHAT_TOPIC, JSON.stringify({id, name, text, ts: Date.now()}), {qos:0});
     addChatMsg(name, text, true, false);
   } else {
-    addChatMsg('(オフライン)', text, true, false);
+    addChatMsg('(オフライン・送信できませんでした)', text, true, false);
   }
   // Discord Webhook にミラー送信
   if(cfg.webhookChat && cfg.webhookUrl){
@@ -3052,6 +3140,7 @@ soundOn = cfg.eewSound||cfg.eqSound;
 voiceOn = cfg.tts;
 updateSoundBtn();
 updateChatDiscordStatus();
+loadChatName();
 
 // 保存済み履歴の読み込み
 loadPersistedHistory();
@@ -3068,15 +3157,19 @@ loadWeather();
 loadTyphoon();
 loadVolcano();
 loadOutageInfo();
+fetchThunderTimes();
 connectChat();
 locateMe();
 loadWarnings();
 
-// 定期更新
+// 定期更新（すべての情報を最低10分に1回は更新する）
 setInterval(loadWeather, 15*60*1000);
 setInterval(loadTyphoon, 10*60*1000);
 setInterval(fetchRadarTimes, 5*60*1000);
-setInterval(loadWarnings, 10*60*1000); // 10分毎に警報更新
+setInterval(fetchThunderTimes, 5*60*1000);
+setInterval(loadWarnings, 10*60*1000); // 10分毎に警報更新（全都道府県）
+setInterval(loadVolcano, 10*60*1000);
+setInterval(loadOutageInfo, 10*60*1000);
 
 log(`統合防災モニター v${VERSION} 起動 (完全ローカル動作モード)`);
 </script>
